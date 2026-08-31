@@ -26,7 +26,7 @@ import {
 */
 
 const API_BASE =
-  "http://localhost/rhea-pos-api/customers";
+  "https://sakuracareapi.site/rhea-pos-api/customers";
 
 const LIST_API =
   `${API_BASE}/list.php`;

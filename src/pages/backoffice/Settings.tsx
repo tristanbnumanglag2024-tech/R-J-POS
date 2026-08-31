@@ -44,7 +44,7 @@ interface StoreForm {
 // API
 // ============================================================
 
-const API_BASE = "http://sakuracareapi.site/rhea-pos-api";
+const API_BASE = "https://sakuracareapi.site/rhea-pos-api";
 
 // ============================================================
 // DEFAULT STORE FORM

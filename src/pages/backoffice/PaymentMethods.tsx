@@ -8,7 +8,7 @@ import { Card, Badge, Toggle } from "../../components/ui";
 */
 
 const API_BASE =
-  "http://sakuracareapi.site/rhea-pos-api/payment_methods";
+  "https://sakuracareapi.site/rhea-pos-api/payment_methods";
 
 const LIST_API =
   `${API_BASE}/list.php`;

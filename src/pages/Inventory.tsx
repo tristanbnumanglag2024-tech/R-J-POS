@@ -72,7 +72,7 @@ type HistoryItem = {
 */
 
 const API_BASE =
-  "http://sakuracareapi.site/rhea-pos-api/inventory";
+  "https://sakuracareapi.site/rhea-pos-api/inventory";
 
 /*
 |--------------------------------------------------------------------------

@@ -210,7 +210,7 @@ type CartItem = {
 // API
 // ============================================================
 
-const API_BASE = "http://sakuracareapi.site/rhea-pos-api";
+const API_BASE = "https://sakuracareapi.site/rhea-pos-api";
 
 // ============================================================
 // APP
