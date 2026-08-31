@@ -1,0 +1,10 @@
+{
+  "description": "Manage retail sales, inventory, customers, and reports with a streamlined POS and back office system designed for small to medium retail businesses.",
+  "robots": {
+    "index": false
+  },
+  "accessibility": {
+    "addBypassLinks": false,
+    "ignoreReducedMotion": false
+  }
+}
