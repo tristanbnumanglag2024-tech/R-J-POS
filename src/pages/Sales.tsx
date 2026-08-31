@@ -54,7 +54,7 @@ interface SaleDetail extends Sale {
   items_detail: SaleItem[];
 }
 
-const API_BASE = "http://localhost/rhea-pos-api";
+const API_BASE = "http://sakuracareapi.site/rhea-pos-api";
 
 function fmt(value: number) {
   return "$" + Number(value || 0).toLocaleString("en-US", {

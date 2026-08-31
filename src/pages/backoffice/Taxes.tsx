@@ -16,7 +16,7 @@ import {
   Toggle,
 } from "../../components/ui";
 
-const API_BASE = "http://localhost/rhea-pos-api";
+const API_BASE = "http://sakuracareapi.site/rhea-pos-api";
 
 type Tax = {
   id: number;

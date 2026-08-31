@@ -25,7 +25,7 @@ import {
 
 const API_BASE =
   import.meta.env.VITE_API_BASE ||
-  "http://localhost/rhea-pos-api";
+  "http://sakuracareapi.site/rhea-pos-api";
 
 /*
 |--------------------------------------------------------------------------

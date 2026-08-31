@@ -11,7 +11,7 @@ import {
   Toggle,
 } from "../components/ui";
 
-const API_BASE = "http://localhost/rhea-pos-api";
+const API_BASE = "http://sakuracareapi.site/rhea-pos-api";
 
 type Category = {
   id: number;
@@ -59,7 +59,7 @@ function getImageUrl(image: string | null) {
     return image;
   }
 
-  return `http://localhost${image}`;
+  return `http://sakuracareapi.site${image}`;
 }
 
 export default function Categories({
