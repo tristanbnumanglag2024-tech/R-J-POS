@@ -38,13 +38,37 @@ export default function Receipts() {
   const paged = filtered.slice((page - 1) * PER_PAGE, page * PER_PAGE);
 
   return (
+    
     <div className="p-6 space-y-4 max-w-[1400px]">
-      <div className="flex items-center justify-between">
-        <div>
-          <h2 className="text-[18px] font-bold text-[#0F172A]">Receipts</h2>
-          <p className="text-[12px] text-[#64748B] mt-0.5">Search and manage all receipts</p>
-        </div>
-      </div>
+{/* Under Maintenance Notice */}
+<div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 flex items-center gap-3">
+  <div className="w-8 h-8 rounded-full bg-amber-100 flex items-center justify-center flex-shrink-0">
+    <svg
+      width="16"
+      height="16"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      className="text-amber-600"
+    >
+      <path d="M12 9v4" />
+      <path d="M12 17h.01" />
+      <path d="M10.3 3.7L2.6 17a2 2 0 001.7 3h15.4a2 2 0 001.7-3L13.7 3.7a2 2 0 00-3.4 0z" />
+    </svg>
+  </div>
+
+  <div>
+    <p className="text-[13px] font-semibold text-amber-800">
+      Under Maintenance
+    </p>
+    <p className="text-[11px] text-amber-700 mt-0.5">
+      The Receipts module is currently under maintenance. The information
+      displayed here is mock data for demonstration purposes only.
+    </p>
+  </div>
+</div>
+
 
       {/* Filters */}
       <Card className="p-4">

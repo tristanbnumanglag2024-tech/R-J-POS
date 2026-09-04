@@ -353,116 +353,130 @@ export default function Settings() {
   // ==========================================================
 
   const deactivateStore = async (store: Store) => {
-    if (store.status === "inactive") {
-      return;
-    }
 
-    const confirmed = window.confirm(
-      `Are you sure you want to deactivate "${store.branch_name}"?`
+  if (store.status === "inactive") {
+    return;
+  }
+
+  const confirmed = window.confirm(
+    `Are you sure you want to deactivate "${store.branch_name}"?`
+  );
+
+  if (!confirmed) {
+    return;
+  }
+
+  try {
+
+    setStoreError("");
+
+    const response = await fetch(
+      `${API_BASE}/stores/delete.php`,
+      {
+        method: "POST",
+
+        headers: {
+          "Content-Type": "application/json",
+        },
+
+        body: JSON.stringify({
+          id: store.id,
+          action: "deactivate",
+        }),
+      }
     );
 
-    if (!confirmed) {
-      return;
-    }
+    const data = await response.json();
 
-    try {
-      const response = await fetch(
-        `${API_BASE}/stores/delete.php`,
-        {
-          method: "POST",
+    console.log("Deactivate response:", data);
 
-          headers: {
-            "Content-Type": "application/json",
-          },
-
-          body: JSON.stringify({
-            id: store.id,
-          }),
-        }
-      );
-
-      const data = await response.json();
-
-      if (!response.ok || !data.success) {
-        throw new Error(
-          data.message || "Failed to deactivate store."
-        );
-      }
-
-      await loadStores();
-    } catch (error) {
-      console.error("Deactivate store error:", error);
-
-      setStoreError(
-        error instanceof Error
-          ? error.message
-          : "Unable to deactivate store."
+    if (!response.ok || !data.success) {
+      throw new Error(
+        data.message ||
+        "Failed to deactivate store."
       );
     }
-  };
 
+    await loadStores();
+
+  } catch (error) {
+
+    console.error(
+      "Deactivate store error:",
+      error
+    );
+
+    setStoreError(
+      error instanceof Error
+        ? error.message
+        : "Unable to deactivate store."
+    );
+  }
+};
   // ==========================================================
   // REACTIVATE STORE
   // ==========================================================
 
   const reactivateStore = async (store: Store) => {
-    try {
-      const response = await fetch(
-        `${API_BASE}/stores/update.php`,
-        {
-          method: "POST",
 
-          headers: {
-            "Content-Type": "application/json",
-          },
+  if (store.status === "active") {
+    return;
+  }
 
-          body: JSON.stringify({
-            id: store.id,
+  const confirmed = window.confirm(
+    `Are you sure you want to reactivate "${store.branch_name}"?`
+  );
 
-            store_name: store.store_name,
-            branch_name: store.branch_name,
+  if (!confirmed) {
+    return;
+  }
 
-            email: store.email || "",
-            phone: store.phone || "",
-            address: store.address || "",
+  try {
 
-            city: store.city || "",
-            province: store.province || "",
-            postal_code: store.postal_code || "",
+    setStoreError("");
 
-            country: store.country || "Philippines",
-            currency: store.currency || "PHP",
+    const response = await fetch(
+      `${API_BASE}/stores/activate.php`,
+      {
+        method: "POST",
 
-            business_registration_no:
-              store.business_registration_no || "",
+        headers: {
+          "Content-Type": "application/json",
+        },
 
-            tax_registration_no:
-              store.tax_registration_no || "",
-
-            status: "active",
-          }),
-        }
-      );
-
-      const data = await response.json();
-
-      if (!response.ok || !data.success) {
-        throw new Error(
-          data.message || "Failed to reactivate store."
-        );
+        body: JSON.stringify({
+          id: store.id,
+        }),
       }
+    );
 
-      await loadStores();
-    } catch (error) {
-      console.error("Reactivate store error:", error);
+    const data = await response.json();
 
-      setStoreError(
-        error instanceof Error
-          ? error.message
-          : "Unable to reactivate store."
+    console.log("Activate response:", data);
+
+    if (!response.ok || !data.success) {
+      throw new Error(
+        data.message ||
+        "Failed to reactivate store."
       );
     }
-  };
+
+    await loadStores();
+
+  } catch (error) {
+
+    console.error(
+      "Reactivate store error:",
+      error
+    );
+
+    setStoreError(
+      error instanceof Error
+        ? error.message
+        : "Unable to reactivate store."
+    );
+  }
+};
 
   // ==========================================================
   // GENERIC SAVE
