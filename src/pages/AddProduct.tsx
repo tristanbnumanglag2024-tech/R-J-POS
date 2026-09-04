@@ -97,6 +97,17 @@ export default function AddProduct({
   const [createScope, setCreateScope] = useState<"current" | "selected" | "all">("current");
   const [selectedStoreIds, setSelectedStoreIds] = useState<number[]>([]);
 
+  // Only active stores can be selected as target stores.
+  // Inactive stores are hidden from the store-selection UI.
+  const activeStores = useMemo(
+    () =>
+      stores.filter(
+        (store) =>
+          String(store.status || "").toLowerCase() !== "inactive"
+      ),
+    [stores]
+  );
+
   /*
   |--------------------------------------------------------------------------
   | FORM
@@ -994,7 +1005,7 @@ export default function AddProduct({
 
       {/* CREATE FOR STORES */}
 
-      {storeId && stores.length > 0 && (
+      {storeId && activeStores.length > 0 && (
         <Card className="p-5">
           <div className="flex items-start justify-between gap-4">
             <div>
@@ -1004,7 +1015,7 @@ export default function AddProduct({
               </p>
             </div>
             <span className="text-[10px] font-medium text-[#64748B] bg-[#F8FAFC] border border-[#E2E8F0] px-2 py-1 rounded-md">
-              {createScope === "all" ? `${stores.length} stores` : createScope === "selected" ? `${selectedStoreIds.length} selected` : "Current store"}
+              {createScope === "all" ? `${activeStores.length} stores` : createScope === "selected" ? `${selectedStoreIds.length} selected` : "Current store"}
             </span>
           </div>
 
@@ -1026,7 +1037,7 @@ export default function AddProduct({
                     if (value === "current") {
                       setSelectedStoreIds([storeId]);
                     } else if (value === "all") {
-                      setSelectedStoreIds(stores.map((store) => store.id));
+                      setSelectedStoreIds(activeStores.map((store) => store.id));
                     }
                   }}
                   className={`text-left rounded-xl border px-3 py-3 transition-colors ${
@@ -1044,7 +1055,7 @@ export default function AddProduct({
 
           {createScope === "selected" && (
             <div className="mt-3 border border-[#E2E8F0] rounded-xl p-3 space-y-2 max-h-48 overflow-y-auto">
-              {stores.map((store) => {
+              {activeStores.map((store) => {
                 const checked = selectedStoreIds.includes(store.id);
                 return (
                   <label key={store.id} className={`flex items-center justify-between gap-3 px-3 py-2.5 rounded-lg cursor-pointer ${checked ? "bg-[#EEF2FF]" : "bg-[#F8FAFC]"}`}>
@@ -1079,7 +1090,7 @@ export default function AddProduct({
           {createScope === "all" && (
             <div className="mt-3 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2">
               <p className="text-[11px] text-emerald-700">
-                The product will be created in all {stores.length} stores. Initial stock is applied only to the current store; other stores start at 0.
+                The product will be created in all {activeStores.length} active stores. Initial stock is applied only to the current store; other stores start at 0.
               </p>
             </div>
           )}
