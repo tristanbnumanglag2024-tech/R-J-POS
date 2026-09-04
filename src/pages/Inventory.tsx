@@ -62,6 +62,12 @@ type HistoryItem = {
   created_at: string;
 };
 
+type AverageCostMap = Record<string, number>;
+
+type AverageCostResponse = {
+  average_costs: AverageCostMap;
+};
+
 /*
 |--------------------------------------------------------------------------
 | CONFIG
@@ -73,6 +79,9 @@ type HistoryItem = {
 
 const API_BASE =
   "https://sakuracareapi.site/rhea-pos-api/inventory";
+
+const AVERAGE_COST_API =
+  "https://sakuracareapi.site/rhea-pos-api/inventory/purchase-average-cost.php";
 
 /*
 |--------------------------------------------------------------------------
@@ -93,7 +102,7 @@ const STORE_ID = 1;
 
 function fmt(n: number) {
   return (
-    "$" +
+    "₱" +
     Number(n || 0).toLocaleString(
       "en-US",
       {
@@ -320,6 +329,69 @@ export default function Inventory({
 
   /*
   |--------------------------------------------------------------------------
+  | LOAD WEIGHTED AVERAGE PURCHASE COST
+  |--------------------------------------------------------------------------
+  |
+  | Display-only calculation.
+  | It DOES NOT update products.cost in MySQL.
+  |
+  | Formula:
+  | SUM(received_quantity * unit_cost)
+  | -----------------------------------
+  | SUM(received_quantity)
+  |
+  |--------------------------------------------------------------------------
+  */
+
+  const loadAveragePurchaseCosts = useCallback(
+    async (storeId: number): Promise<AverageCostResponse> => {
+      const response = await fetch(
+        `${AVERAGE_COST_API}?store_id=${encodeURIComponent(
+          String(storeId)
+        )}`,
+        {
+          method: "GET",
+          headers: {
+            Accept: "application/json",
+          },
+        }
+      );
+
+      const text = await response.text();
+
+      let data: any;
+
+      try {
+        data = JSON.parse(text);
+      } catch {
+        throw new Error(
+          `Average cost API did not return valid JSON:\n${text.substring(
+            0,
+            500
+          )}`
+        );
+      }
+
+      if (!response.ok || !data.success) {
+        throw new Error(
+          data.message ||
+            "Failed to load average purchase costs."
+        );
+      }
+
+      return {
+        average_costs:
+          data.average_costs &&
+          typeof data.average_costs === "object"
+            ? (data.average_costs as AverageCostMap)
+            : {},
+      };
+    },
+    []
+  );
+
+  /*
+  |--------------------------------------------------------------------------
   | LOAD INVENTORY
   |--------------------------------------------------------------------------
   */
@@ -376,41 +448,119 @@ export default function Inventory({
 
     }
 
-    const response =
-      await fetch(
-        `${API_BASE}/inventory.php?${params.toString()}`
+    const [inventoryData, averageCostData] =
+      await Promise.all([
+        fetch(
+          `${API_BASE}/inventory.php?${params.toString()}`
+        ).then(async (response) => {
+          const data = await response.json();
+
+          if (!response.ok || !data.success) {
+            throw new Error(
+              data.message ||
+                "Failed to load inventory."
+            );
+          }
+
+          return data;
+        }),
+
+        loadAveragePurchaseCosts(activeStoreId).catch(
+          (averageCostError): AverageCostResponse => {
+            console.warn(
+              "Average purchase cost could not be loaded. Falling back to products.cost:",
+              averageCostError
+            );
+
+            return {
+              average_costs: {},
+            };
+          }
+        ),
+      ]);
+
+    const averageCosts =
+      averageCostData.average_costs;
+
+    /*
+    |--------------------------------------------------------------------------
+    | APPLY DISPLAY-ONLY WEIGHTED AVERAGE COST
+    |--------------------------------------------------------------------------
+    */
+
+    const rawItems: InventoryItem[] =
+      Array.isArray(inventoryData.items)
+        ? inventoryData.items
+        : [];
+
+    const updatedItems =
+      rawItems.map((item) => {
+        const calculatedCost =
+          averageCosts[String(item.id)];
+
+        const finalCost =
+          Number.isFinite(Number(calculatedCost)) &&
+          Number(calculatedCost) >= 0
+            ? Number(calculatedCost)
+            : Number(item.cost || 0);
+
+        return {
+          ...item,
+          cost: finalCost,
+          value:
+            Number(item.stock || 0) *
+            finalCost,
+        };
+      });
+
+    setItems(updatedItems);
+
+    /*
+    |--------------------------------------------------------------------------
+    | SUMMARY
+    |--------------------------------------------------------------------------
+    */
+
+    const serverSummary =
+      inventoryData.summary || {};
+
+    const calculatedTotalValue =
+      updatedItems.reduce(
+        (sum, item) =>
+          sum +
+          Number(item.stock || 0) *
+            Number(item.cost || 0),
+        0
       );
 
-    const data =
-      await response.json();
+    setSummary({
+      total_products:
+        Number(
+          serverSummary.total_products ??
+            updatedItems.length
+        ),
 
-    if (
-      !response.ok ||
-      !data.success
-    ) {
+      total_units:
+        Number(
+          serverSummary.total_units ??
+            updatedItems.reduce(
+              (sum, item) =>
+                sum +
+                Number(item.stock || 0),
+              0
+            )
+        ),
 
-      throw new Error(
-        data.message ||
-        "Failed to load inventory."
-      );
+      low_stock:
+        Number(serverSummary.low_stock ?? 0),
 
-    }
+      out_of_stock:
+        Number(
+          serverSummary.out_of_stock ?? 0
+        ),
 
-    setItems(
-      Array.isArray(data.items)
-        ? data.items
-        : []
-    );
-
-    setSummary(
-      data.summary || {
-        total_products: 0,
-        total_units: 0,
-        low_stock: 0,
-        out_of_stock: 0,
-        total_value: 0,
-      }
-    );
+      total_value: calculatedTotalValue,
+    });
 
   } catch (err) {
 
@@ -445,6 +595,7 @@ export default function Inventory({
   activeStoreId,
   search,
   statusFilter,
+  loadAveragePurchaseCosts,
 ]);
 
        
@@ -734,7 +885,7 @@ export default function Inventory({
         "Category",
         "On Hand",
         "Minimum Stock",
-        "Cost",
+        "Cost (Average)",
         "Value",
         "Status",
         "Updated",
@@ -995,7 +1146,7 @@ export default function Inventory({
         <StatCard
           label="Inventory Value"
           value={
-            "$" +
+            "₱" +
             (
               Number(
                 summary.total_value || 0
@@ -1100,7 +1251,7 @@ export default function Inventory({
             "Category",
             "On Hand",
             "Min",
-            "Cost",
+            "Cost (Average)",
             "Value",
             "Status",
             "Updated",
