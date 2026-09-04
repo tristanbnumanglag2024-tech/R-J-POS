@@ -24,7 +24,9 @@ const API_BASE = "https://sakuracareapi.site/rhea-pos-api";
 
 type Store = {
   id: number;
-  name: string;
+  name?: string;
+  store_name?: string;
+  branch_name?: string;
   code?: string;
   address?: string;
   city?: string;
@@ -1166,16 +1168,14 @@ export default function Employees() {
                           </div>
 
                           <div>
-                            <p className="text-[12px] font-medium text-[#0F172A]">
-                              {store.name}
-                            </p>
+  <p className="text-[12px] font-medium text-[#0F172A]">
+    {store.branch_name || store.name || store.store_name || "Unnamed Branch"}
+  </p>
 
-                            {store.address && (
-                              <p className="text-[10px] text-[#94A3B8]">
-                                {store.address}
-                              </p>
-                            )}
-                          </div>
+  <p className="text-[10px] text-[#94A3B8]">
+    {store.store_name || ""}
+  </p>
+</div>
                         </div>
 
                         {store.status && (
