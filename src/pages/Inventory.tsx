@@ -1594,28 +1594,17 @@ export default function Inventory({
 
         let movementSign = "";
 
-        if (isRemove) {
-
-          movementSign = "−";
-
-        } else if (isAdd) {
-
-          movementSign = "+";
-
-        } else if (isAdjustment) {
-
-          movementSign = "↕";
-
-        } else if (isStockDecrease) {
-
-          movementSign = "−";
-
-        } else if (isStockIncrease) {
-
-          movementSign = "+";
-
-        }
-
+if (isRemove) {
+  movementSign = "−";
+} else if (isAdd) {
+  movementSign = "+";
+} else if (isAdjustment) {
+  movementSign = "";
+} else if (isStockDecrease) {
+  movementSign = "−";
+} else if (isStockIncrease) {
+  movementSign = "+";
+}
 
         /*
         |--------------------------------------------------------------------------
