@@ -16,7 +16,7 @@ import Categories from "./pages/Categories";
 import Inventory from "./pages/Inventory";
 import Sales from "./pages/Sales";
 import Receipts from "./pages/Receipts";
-
+import StoreTransfers from "./pages/backoffice/StoreTransfers";
 import Customers from "./pages/backoffice/Customers";
 import Employees from "./pages/backoffice/Employees";
 import Discounts from "./pages/backoffice/Discounts";
@@ -55,6 +55,7 @@ type BOPage =
   | "dashboard"
   | "sales"
   | "receipts"
+  | "store-transfers"
   | "products"
   | "categories"
   | "inventory"
@@ -114,6 +115,11 @@ const PAGE_META: Record<
   receipts: {
     title: "Receipts",
     subtitle: "Search and manage receipts",
+  },
+
+  "store-transfers": {
+    title: "Store Transfers",
+    subtitle: "Transfer stock between stores",
   },
 
   products: {
@@ -787,6 +793,13 @@ case "add-product":
 
       case "receipts":
         return <Receipts />;
+
+      case "store-transfers":
+        return (
+          <StoreTransfers
+            activeStoreId={selectedStore?.id ?? null}
+          />
+        );
 
       case "customers":
   return (

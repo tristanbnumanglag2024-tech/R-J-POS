@@ -6,6 +6,13 @@ interface AddProductProps {
   activeStoreId: number | null;
 }
 
+interface StoreOption {
+  id: number;
+  store_name: string;
+  branch_name: string;
+  status?: string;
+}
+
 interface Category {
   id: number;
   store_id: number;
@@ -72,6 +79,7 @@ export default function AddProduct({
 
   const [categories, setCategories] = useState<Category[]>([]);
   const [suppliers, setSuppliers] = useState<Supplier[]>([]);
+  const [stores, setStores] = useState<StoreOption[]>([]);
 
   const [loadingCategories, setLoadingCategories] = useState(false);
   const [loadingSuppliers, setLoadingSuppliers] = useState(false);
@@ -85,6 +93,9 @@ export default function AddProduct({
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState("");
+
+  const [createScope, setCreateScope] = useState<"current" | "selected" | "all">("current");
+  const [selectedStoreIds, setSelectedStoreIds] = useState<number[]>([]);
 
   /*
   |--------------------------------------------------------------------------
@@ -133,6 +144,40 @@ export default function AddProduct({
         [key]: value,
       }));
     };
+
+  /*
+  |--------------------------------------------------------------------------
+  | LOAD STORES
+  |--------------------------------------------------------------------------
+  */
+
+  const fetchStores = async () => {
+    try {
+      const response = await fetch(`${API_BASE}/stores/list.php`);
+      const data = await response.json();
+
+      if (!response.ok || !data.success) {
+        throw new Error(data.message || "Failed to load stores.");
+      }
+
+      const rows = Array.isArray(data.stores) ? data.stores : [];
+
+      setStores(
+        rows.map((store: any) => ({
+          id: Number(store.id),
+          store_name: store.store_name || `Store #${store.id}`,
+          branch_name: store.branch_name || "",
+          status: store.status,
+        }))
+      );
+    } catch (err) {
+      console.error("Store fetch error:", err);
+      setStores([]);
+      setError(
+        err instanceof Error ? err.message : "Unable to load stores."
+      );
+    }
+  };
 
   /*
   |--------------------------------------------------------------------------
@@ -253,8 +298,11 @@ export default function AddProduct({
       supplier_id: "",
     }));
 
+    fetchStores();
     fetchCategories(storeId);
     fetchSuppliers(storeId);
+    setCreateScope("current");
+    setSelectedStoreIds([storeId]);
   }, [storeId]);
 
   /*
@@ -371,31 +419,36 @@ export default function AddProduct({
       return false;
     }
 
-    if (!form.category_id) {
-      setError("Please select a category.");
+    if (createScope === "selected" && selectedStoreIds.length === 0) {
+      setError("Please select at least one target store.");
       return false;
     }
 
     /*
-     * Verify category belongs to selected store.
+     * Category is optional.
+     * A product can be created without a category and configured later
+     * for the other stores. If a category is selected, verify it belongs
+     * to the current store.
      */
 
-    const category = categories.find(
-      (item) => item.id === Number(form.category_id)
-    );
-
-    if (!category) {
-      setError(
-        "The selected category is invalid."
+    if (form.category_id) {
+      const category = categories.find(
+        (item) => item.id === Number(form.category_id)
       );
-      return false;
-    }
 
-    if (Number(category.store_id) !== Number(storeId)) {
-      setError(
-        "The selected category does not belong to this store."
-      );
-      return false;
+      if (!category) {
+        setError(
+          "The selected category is invalid."
+        );
+        return false;
+      }
+
+      if (Number(category.store_id) !== Number(storeId)) {
+        setError(
+          "The selected category does not belong to this store."
+        );
+        return false;
+      }
     }
 
     /*
@@ -547,12 +600,46 @@ export default function AddProduct({
       const formData = new FormData();
 
       /*
-       * STORE
+       * SOURCE STORE
        */
 
       formData.append(
         "store_id",
         String(storeId)
+      );
+
+      formData.append("create_scope", createScope);
+
+      if (createScope === "selected") {
+        formData.append(
+          "target_store_ids",
+          JSON.stringify(selectedStoreIds)
+        );
+      }
+
+      if (createScope === "all") {
+        formData.append(
+          "target_store_ids",
+          JSON.stringify(stores.map((store) => store.id))
+        );
+      }
+
+      const selectedCategory = categories.find(
+        (item) => item.id === Number(form.category_id)
+      );
+
+      const selectedSupplier = form.supplier_id
+        ? suppliers.find((item) => item.id === Number(form.supplier_id))
+        : null;
+
+      formData.append(
+        "category_name",
+        selectedCategory?.name || ""
+      );
+
+      formData.append(
+        "supplier_name",
+        selectedSupplier?.name || ""
       );
 
       /*
@@ -737,6 +824,17 @@ export default function AddProduct({
         );
       }
 
+      const generatedSku = data.sku || data.products?.[0]?.sku || form.sku;
+
+      if (!generatedSku) {
+        throw new Error("Product was created but no SKU was returned. Please check the product record.");
+      }
+
+      setForm((current) => ({
+        ...current,
+        sku: generatedSku,
+      }));
+
       setSaved(true);
 
       /*
@@ -894,6 +992,100 @@ export default function AddProduct({
         </div>
       )}
 
+      {/* CREATE FOR STORES */}
+
+      {storeId && stores.length > 0 && (
+        <Card className="p-5">
+          <div className="flex items-start justify-between gap-4">
+            <div>
+              <h3 className="text-[13px] font-semibold text-[#0F172A]">Create Product For</h3>
+              <p className="text-[11px] text-[#64748B] mt-0.5">
+                Choose where this product should be available. Each store keeps its own stock.
+              </p>
+            </div>
+            <span className="text-[10px] font-medium text-[#64748B] bg-[#F8FAFC] border border-[#E2E8F0] px-2 py-1 rounded-md">
+              {createScope === "all" ? `${stores.length} stores` : createScope === "selected" ? `${selectedStoreIds.length} selected` : "Current store"}
+            </span>
+          </div>
+
+          <div className="grid grid-cols-3 gap-2 mt-4">
+            {[
+              { value: "current", label: "Current Store", desc: "Create only here" },
+              { value: "selected", label: "Selected Stores", desc: "Choose branches" },
+              { value: "all", label: "All Stores", desc: "Create everywhere" },
+            ].map((option) => {
+              const active = createScope === option.value;
+              return (
+                <button
+                  key={option.value}
+                  type="button"
+                  onClick={() => {
+                    const value = option.value as "current" | "selected" | "all";
+                    setCreateScope(value);
+                    setError("");
+                    if (value === "current") {
+                      setSelectedStoreIds([storeId]);
+                    } else if (value === "all") {
+                      setSelectedStoreIds(stores.map((store) => store.id));
+                    }
+                  }}
+                  className={`text-left rounded-xl border px-3 py-3 transition-colors ${
+                    active
+                      ? "border-[#4F46E5] bg-[#EEF2FF]"
+                      : "border-[#E2E8F0] bg-white hover:bg-[#F8FAFC]"
+                  }`}
+                >
+                  <p className={`text-[12px] font-semibold ${active ? "text-[#4338CA]" : "text-[#0F172A]"}`}>{option.label}</p>
+                  <p className="text-[10px] text-[#94A3B8] mt-0.5">{option.desc}</p>
+                </button>
+              );
+            })}
+          </div>
+
+          {createScope === "selected" && (
+            <div className="mt-3 border border-[#E2E8F0] rounded-xl p-3 space-y-2 max-h-48 overflow-y-auto">
+              {stores.map((store) => {
+                const checked = selectedStoreIds.includes(store.id);
+                return (
+                  <label key={store.id} className={`flex items-center justify-between gap-3 px-3 py-2.5 rounded-lg cursor-pointer ${checked ? "bg-[#EEF2FF]" : "bg-[#F8FAFC]"}`}>
+                    <div className="flex items-center gap-3 min-w-0">
+                      <input
+                        type="checkbox"
+                        checked={checked}
+                        onChange={() => {
+                          setSelectedStoreIds((current) =>
+                            current.includes(store.id)
+                              ? current.filter((id) => id !== store.id)
+                              : [...current, store.id]
+                          );
+                          setError("");
+                        }}
+                        className="accent-[#4F46E5]"
+                      />
+                      <div className="min-w-0">
+                        <p className="text-[12px] font-medium text-[#0F172A] truncate">{store.branch_name || store.store_name}</p>
+                        <p className="text-[10px] text-[#94A3B8] truncate">{store.store_name}</p>
+                      </div>
+                    </div>
+                    {store.id === storeId && (
+                      <span className="text-[9px] font-semibold text-[#4F46E5]">CURRENT</span>
+                    )}
+                  </label>
+                );
+              })}
+            </div>
+          )}
+
+          {createScope === "all" && (
+            <div className="mt-3 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2">
+              <p className="text-[11px] text-emerald-700">
+                The product will be created in all {stores.length} stores. Initial stock is applied only to the current store; other stores start at 0.
+              </p>
+            </div>
+          )}
+        </Card>
+      )}
+
       {/* ERROR */}
 
       {error && (
@@ -935,12 +1127,17 @@ export default function AddProduct({
 
               <div className="grid grid-cols-2 gap-3">
 
-                <Input
-                  label="SKU"
-                  value={form.sku}
-                  onChange={set("sku")}
-                  placeholder="Optional"
-                />
+                <div>
+                  <Input
+                    label="SKU"
+                    value={form.sku}
+                    onChange={set("sku")}
+                    placeholder="Leave blank to auto-generate"
+                  />
+                  <p className="text-[10px] text-[#64748B] mt-1">
+                    SKU is required. Leave it blank and the system will generate a unique SKU automatically.
+                  </p>
+                </div>
 
                 <Input
                   label="Barcode"
@@ -952,7 +1149,7 @@ export default function AddProduct({
               </div>
 
               <Select
-                label="Category"
+                label="Category (Optional)"
                 value={form.category_id}
                 onChange={set("category_id")}
                 placeholder={
@@ -969,6 +1166,10 @@ export default function AddProduct({
                   })
                 )}
               />
+
+              <p className="text-[10px] text-[#94A3B8] mt-1.5">
+                Optional. Leave blank to create the product without a category. You can configure the category per store later.
+              </p>
 
               <div>
                 <label className="text-[12px] font-medium text-[#374151] block mb-1">
