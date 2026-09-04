@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Card,
   Badge,
@@ -76,6 +76,20 @@ export default function Suppliers({ activeStore }: SuppliersProps) {
   const [saving, setSaving] = useState(false);
 
   const [error, setError] = useState("");
+
+  const errorRef = useRef<HTMLDivElement | null>(null);
+
+  // Automatically scroll the open supplier form to the error message.
+  useEffect(() => {
+    if (!error || (!showAdd && !detail)) return;
+
+    requestAnimationFrame(() => {
+      errorRef.current?.scrollIntoView({
+        behavior: "smooth",
+        block: "center",
+      });
+    });
+  }, [error, showAdd, detail]);
 
   const [form, setForm] = useState<SupplierForm>({
     name: "",
@@ -543,62 +557,7 @@ export default function Suppliers({ activeStore }: SuppliersProps) {
 
       </div>
 
-      {/* ERROR */}
-
-      {error && (
-        <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-[12px] text-red-600">
-          {error}
-        </div>
-      )}
-
-      {/* SUMMARY */}
-
-      <div className="grid grid-cols-4 gap-3">
-
-        {[
-          {
-            label: "Total Suppliers",
-            value: totalSuppliers,
-            color: "#4F46E5",
-          },
-          {
-            label: "Total Orders",
-            value: totalOrders,
-            color: "#0EA5E9",
-          },
-          {
-            label: "Outstanding Balance",
-            value: fmt(outstanding),
-            color: "#F59E0B",
-          },
-          {
-            label: "Active",
-            value: activeSuppliers,
-            color: "#10B981",
-          },
-        ].map((s) => (
-
-          <Card
-            key={s.label}
-            className="px-5 py-4"
-          >
-
-            <p className="text-[11px] text-[#64748B] mb-1">
-              {s.label}
-            </p>
-
-            <p
-              className="text-[18px] font-bold"
-              style={{ color: s.color }}
-            >
-              {s.value}
-            </p>
-
-          </Card>
-
-        ))}
-
-      </div>
+    
 
       {/* SEARCH */}
 
@@ -808,6 +767,15 @@ export default function Suppliers({ activeStore }: SuppliersProps) {
 
           <div className="space-y-4">
 
+            {error && (
+              <div
+                ref={errorRef}
+                className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-[12px] text-red-600"
+              >
+                {error}
+              </div>
+            )}
+
             <Input
               label="Company Name"
               value={form.name}
@@ -933,6 +901,15 @@ export default function Suppliers({ activeStore }: SuppliersProps) {
         >
 
           <div className="space-y-4">
+
+            {error && (
+              <div
+                ref={errorRef}
+                className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-[12px] text-red-600"
+              >
+                {error}
+              </div>
+            )}
 
             <Input
               label="Company Name"

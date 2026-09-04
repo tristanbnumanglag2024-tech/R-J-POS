@@ -391,6 +391,9 @@ export default function PurchaseOrders({
   const [receiving, setReceiving] =
     useState(false);
 
+  const [cancelling, setCancelling] =
+    useState(false);
+
   const [error, setError] =
     useState("");
 
@@ -1559,6 +1562,100 @@ export default function PurchaseOrders({
   };
 
   // ==========================================================
+  // CANCEL PURCHASE ORDER
+  // ==========================================================
+
+  const cancelPurchaseOrder = async () => {
+    if (!activeStoreId || !detail) {
+      return;
+    }
+
+    if (
+      detail.status === "received" ||
+      detail.status === "cancelled"
+    ) {
+      return;
+    }
+
+    const confirmed = window.confirm(
+      `Cancel purchase order ${detail.po_number}? This action cannot be undone.`
+    );
+
+    if (!confirmed) {
+      return;
+    }
+
+    try {
+      setCancelling(true);
+      setError("");
+      setSuccess("");
+
+      const response = await fetch(
+        `${API_BASE}/purchase_orders/cancel.php`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Accept: "application/json",
+          },
+          body: JSON.stringify({
+            purchase_order_id: detail.id,
+            store_id: activeStoreId,
+          }),
+        }
+      );
+
+      const text = await response.text();
+
+      let data: any;
+
+      try {
+        data = JSON.parse(text);
+      } catch {
+        throw new Error(
+          `Cancel API did not return valid JSON:\n${text.substring(0, 500)}`
+        );
+      }
+
+      if (!response.ok || !data.success) {
+        throw new Error(
+          data.message ||
+            "Failed to cancel purchase order."
+        );
+      }
+
+      setDetail((current) =>
+        current
+          ? {
+              ...current,
+              status: "cancelled",
+            }
+          : current
+      );
+
+      setSuccess(
+        data.message ||
+          "Purchase order cancelled successfully."
+      );
+
+      await loadOrders(activeStoreId);
+    } catch (err) {
+      console.error(
+        "Cancel PO error:",
+        err
+      );
+
+      setError(
+        err instanceof Error
+          ? err.message
+          : "Unable to cancel purchase order."
+      );
+    } finally {
+      setCancelling(false);
+    }
+  };
+
+  // ==========================================================
   // OPEN PAYMENT
   // ==========================================================
 
@@ -1910,6 +2007,14 @@ export default function PurchaseOrders({
   const openReceive = async (
     order: PurchaseOrder
   ) => {
+    if (order.status === "cancelled") {
+      setError(
+        "Cancelled purchase orders cannot be received."
+      );
+
+      return;
+    }
+
     if (
       order.status ===
       "received"
@@ -3102,6 +3207,18 @@ export default function PurchaseOrders({
               </div>
             </div>
 
+            {detail.status === "cancelled" && (
+              <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-3">
+                <p className="text-[12px] font-semibold text-red-700">
+                  Purchase Order Cancelled
+                </p>
+
+                <p className="text-[11px] text-red-600 mt-1">
+                  This purchase order has been cancelled and can no longer be received or paid.
+                </p>
+              </div>
+            )}
+
             {/* ==================================================
                 ITEMS
             =================================================== */}
@@ -3378,6 +3495,20 @@ export default function PurchaseOrders({
                     }
                   >
                     Make Payment
+                  </Button>
+                )}
+
+              {detail.status !== "received" &&
+                detail.status !== "cancelled" && (
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    disabled={cancelling || receiving}
+                    onClick={cancelPurchaseOrder}
+                  >
+                    {cancelling
+                      ? "Cancelling..."
+                      : "Cancel PO"}
                   </Button>
                 )}
 

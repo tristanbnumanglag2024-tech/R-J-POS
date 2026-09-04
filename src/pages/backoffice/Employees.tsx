@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Card,
   Badge,
@@ -251,6 +251,25 @@ export default function Employees() {
   const [error, setError] = useState("");
   const [success, setSuccess] = useState("");
 
+
+const errorRef = useRef<HTMLDivElement>(null);
+const [errorTrigger, setErrorTrigger] = useState(0);
+
+const showFormError = (message: string) => {
+  setError(message);
+  setErrorTrigger((prev) => prev + 1);
+};
+
+useEffect(() => {
+  if (!error || !showAdd) return;
+
+  requestAnimationFrame(() => {
+    errorRef.current?.scrollIntoView({
+      behavior: "smooth",
+      block: "start",
+    });
+  });
+}, [errorTrigger, error, showAdd]);
   // ----------------------------------------------------------
   // LOAD STORES
   // ----------------------------------------------------------
@@ -274,7 +293,7 @@ export default function Employees() {
     } catch (err) {
       console.error("Load stores error:", err);
 
-      setError(
+      showFormError(
         err instanceof Error
           ? err.message
           : "Failed to load stores."
@@ -419,29 +438,39 @@ export default function Employees() {
     setSuccess("");
 
     if (!form.name.trim()) {
-      setError("Please enter the employee name.");
-      return;
-    }
+  showFormError("Please enter the employee name.");
+  return;
+}
 
-    if (!form.email.trim()) {
-      setError("Please enter the employee email.");
-      return;
-    }
+if (!form.email.trim()) {
+  showFormError("Please enter the employee email.");
+  return;
+}
 
-    if (!form.role) {
-      setError("Please select an employee role.");
-      return;
-    }
+if (!form.role) {
+  showFormError("Please select an employee role.");
+  return;
+}
 
-    if (form.storeIds.length === 0) {
-      setError("Please assign at least one store.");
-      return;
-    }
+if (form.storeIds.length === 0) {
+  showFormError("Please assign at least one store.");
+  return;
+}
 
-    if (!form.pin) {
-      setError("Please enter a 4-digit PIN.");
-      return;
-    }
+if (!form.pin) {
+  showFormError("Please enter a 4-digit PIN.");
+  return;
+}
+
+if (!/^\d{4}$/.test(form.pin)) {
+  showFormError("PIN must contain exactly 4 digits.");
+  return;
+}
+
+if (form.pin !== form.confirmPin) {
+  showFormError("PIN confirmation does not match.");
+  return;
+}
 
     if (!/^\d{4}$/.test(form.pin)) {
       setError("PIN must contain exactly 4 digits.");
@@ -496,11 +525,11 @@ export default function Employees() {
     } catch (err) {
       console.error("Create employee error:", err);
 
-      setError(
-        err instanceof Error
-          ? err.message
-          : "Failed to create employee."
-      );
+     showFormError(
+  err instanceof Error
+    ? err.message
+    : "Failed to create employee."
+);
     } finally {
       setSaving(false);
     }
@@ -517,32 +546,32 @@ export default function Employees() {
     setSuccess("");
 
     if (!form.name.trim()) {
-      setError("Please enter the employee name.");
+      showFormError("Please enter the employee name.");
       return;
     }
 
     if (!form.email.trim()) {
-      setError("Please enter the employee email.");
+      showFormError("Please enter the employee email.");
       return;
     }
 
     if (!form.role) {
-      setError("Please select an employee role.");
+      showFormError("Please select an employee role.");
       return;
     }
 
     if (form.storeIds.length === 0) {
-      setError("Please assign at least one store.");
+      showFormError("Please assign at least one store.");
       return;
     }
 
     if (form.pin && !/^\d{4}$/.test(form.pin)) {
-      setError("PIN must contain exactly 4 digits.");
+      showFormError("PIN must contain exactly 4 digits.");
       return;
     }
 
     if (form.pin && form.pin !== form.confirmPin) {
-      setError("PIN confirmation does not match.");
+      showFormError("PIN confirmation does not match.");
       return;
     }
 
@@ -737,36 +766,7 @@ export default function Employees() {
           ERROR
       ====================================================== */}
 
-      {error && (
-        <div className="flex items-center justify-between px-4 py-3 rounded-xl bg-red-50 border border-red-200">
-          <div className="flex items-center gap-2">
-            <svg
-              width="15"
-              height="15"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="#EF4444"
-              strokeWidth="2"
-            >
-              <circle cx="12" cy="12" r="10" />
-              <line x1="15" y1="9" x2="9" y2="15" />
-              <line x1="9" y1="9" x2="15" y2="15" />
-            </svg>
 
-            <span className="text-[12px] text-red-600">
-              {error}
-            </span>
-          </div>
-
-          <button
-            type="button"
-            onClick={() => setError("")}
-            className="text-red-400 hover:text-red-600"
-          >
-            ×
-          </button>
-        </div>
-      )}
 
       {/* ======================================================
           SUCCESS
@@ -1064,8 +1064,41 @@ export default function Employees() {
           }}
           width="max-w-xl"
         >
-          <div className="space-y-4">
+        <div className="space-y-4">
+{error && (
+  <div
+    ref={errorRef}
+    tabIndex={-1}
+    className="flex items-center justify-between px-3 py-2.5 rounded-xl bg-red-50 border border-red-200"
+  >
+    <div className="flex items-center gap-2">
+      <svg
+        width="15"
+        height="15"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="#EF4444"
+        strokeWidth="2"
+      >
+        <circle cx="12" cy="12" r="10" />
+        <line x1="15" y1="9" x2="9" y2="15" />
+        <line x1="9" y1="9" x2="15" y2="15" />
+      </svg>
 
+      <span className="text-[12px] text-red-600">
+        {error}
+      </span>
+    </div>
+
+    <button
+      type="button"
+      onClick={() => setError("")}
+      className="text-red-400 hover:text-red-600"
+    >
+      ×
+    </button>
+  </div>
+)}
             <Input
               label="Full Name"
               value={form.name}

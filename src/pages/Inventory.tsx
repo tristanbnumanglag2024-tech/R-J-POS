@@ -45,7 +45,7 @@ type InventorySummary = {
 };
 
 type AdjustmentForm = {
-  type: "add" | "remove" | "set";
+  type: "add_stock" | "remove" | "set_exact";
   qty: string;
   reason: string;
   notes: string;
@@ -141,13 +141,13 @@ function stockBadge(
 function getMovementDisplay(movement: any) {
   const type = movement.movement_type;
 
-  if (type === "add") {
+  if (type === "add_stock") {
     return {
       icon: "+",
       iconClass: "bg-emerald-50 text-emerald-600",
       quantityClass: "text-emerald-600",
       sign: "+",
-      label: "Stock Received",
+      label: "Stock Added",
       source: movement.reason || "Inventory received",
     };
   }
@@ -195,13 +195,13 @@ function getMovementLabel(
     case "receive":
       return "Stock Received";
 
-    case "add":
+    case "add_stock":
       return "Stock Added";
 
     case "remove":
       return "Stock Removed";
 
-    case "set":
+    case "set_exact":
       return "Inventory Set";
 
     case "sale":
@@ -218,7 +218,7 @@ function getMovementLabel(
 function getMovementColor(type: string | null) {
   switch (type) {
     case "receive":
-    case "add":
+    case "add_stock":
     case "return":
       return {
         bg: "bg-emerald-50",
@@ -233,7 +233,7 @@ function getMovementColor(type: string | null) {
         text: "text-red-500",
       };
 
-    case "set":
+    case "set_exact":
     case "adjustment":
       return {
         bg: "bg-indigo-50",
@@ -310,7 +310,7 @@ export default function Inventory({
 
   const [adjustForm, setAdjustForm] =
     useState<AdjustmentForm>({
-      type: "add",
+      type: "add_stock",
       qty: "",
       reason: "",
       notes: "",
@@ -517,7 +517,7 @@ export default function Inventory({
       setAdjustModal(item);
 
       setAdjustForm({
-        type: "add",
+        type: "add_stock",
         qty: "",
         reason: "",
         notes: "",
@@ -542,7 +542,7 @@ export default function Inventory({
   const newStock =
     adjustModal === null
       ? 0
-      : adjustForm.type === "add"
+      : adjustForm.type === "add_stock"
       ? adjustModal.stock +
         adjustmentQuantity
       : adjustForm.type === "remove"
@@ -1515,29 +1515,43 @@ export default function Inventory({
             movement.movement_type || ""
           ).toLowerCase();
 
+        const movementQuantity = Number(
+          movement.quantity
+        );
+
+        const movementStockBefore = Number(
+          movement.stock_before
+        );
+
+        const movementStockAfter = Number(
+          movement.stock_after
+        );
 
         /*
         |--------------------------------------------------------------------------
-        | DETERMINE MOVEMENT DIRECTION
+        | MOVEMENT TYPE
+        |--------------------------------------------------------------------------
+        | Manual adjustments now use these exact database values:
+        | add_stock / remove / set_exact
         |--------------------------------------------------------------------------
         */
+        const isSetExact =
+          movementType === "set_exact";
 
         const isRemove =
-          movementType === "remove" ||
-          movementType === "sale" ||
-          movementType === "stock_out";
-
+          !isSetExact &&
+          (movementType === "remove" ||
+            movementType === "sale" ||
+            movementType === "stock_out");
 
         const isAdd =
-          movementType === "add" ||
-          movementType === "receive" ||
-          movementType === "return";
+          !isSetExact &&
+          (movementType === "add_stock" ||
+            movementType === "add" ||
+            movementType === "receive" ||
+            movementType === "return");
 
-
-        const isAdjustment =
-          movementType === "set" ||
-          movementType === "adjustment";
-
+        const isAdjustment = isSetExact;
 
         /*
         |--------------------------------------------------------------------------
@@ -1557,54 +1571,22 @@ export default function Inventory({
 
         /*
         |--------------------------------------------------------------------------
-        | ICON
+        | ICON + SIGN
+        |--------------------------------------------------------------------------
+        | Set Exact is a final stock value. It NEVER gets + or −.
         |--------------------------------------------------------------------------
         */
 
         let movementIcon = "↕";
-
-        if (isRemove) {
-
-          movementIcon = "−";
-
-        } else if (isAdd) {
-
-          movementIcon = "+";
-
-        } else if (isAdjustment) {
-
-          movementIcon = "↕";
-
-        } else if (isStockDecrease) {
-
-          movementIcon = "−";
-
-        } else if (isStockIncrease) {
-
-          movementIcon = "+";
-
-        }
-
-
-        /*
-        |--------------------------------------------------------------------------
-        | SIGN
-        |--------------------------------------------------------------------------
-        */
-
         let movementSign = "";
 
-if (isRemove) {
-  movementSign = "−";
-} else if (isAdd) {
-  movementSign = "+";
-} else if (isAdjustment) {
-  movementSign = "";
-} else if (isStockDecrease) {
-  movementSign = "−";
-} else if (isStockIncrease) {
-  movementSign = "+";
-}
+        if (isRemove) {
+          movementIcon = "−";
+          movementSign = "−";
+        } else if (isAdd) {
+          movementIcon = "+";
+          movementSign = "+";
+        }
 
         /*
         |--------------------------------------------------------------------------
@@ -1657,9 +1639,11 @@ if (isRemove) {
 
                 <p className="text-[12px] font-medium text-[#0F172A] truncate">
 
-                  {getMovementLabel(
-                    movementType
-                  )}
+                  {isSetExact
+                    ? "Inventory Set"
+                    : getMovementLabel(
+                        movementType
+                      )}
 
                 </p>
 
@@ -1701,13 +1685,11 @@ if (isRemove) {
                 `}
               >
 
-                {movementSign}
-
-                {fmtQty(
-                  Number(
-                    movement.quantity
-                  )
-                )}
+                {isSetExact
+                  ? fmtQty(Math.abs(movementStockAfter))
+                  : `${movementSign}${fmtQty(
+                      Math.abs(movementQuantity)
+                    )}`}
 
               </p>
 
@@ -1833,15 +1815,15 @@ if (isRemove) {
 
                 {[
                   {
-                    value: "add",
+                    value: "add_stock",
                     label: "Add Stock",
                   },
                   {
                     value: "remove",
-                    label: "Remove",
+                    label: "Remove Stock",
                   },
                   {
-                    value: "set",
+                    value: "set_exact",
                     label: "Set Exact",
                   },
                 ].map((type) => {
@@ -1863,16 +1845,16 @@ if (isRemove) {
 
                             type:
                               type.value as
-                                | "add"
+                                | "add_stock"
                                 | "remove"
-                                | "set",
+                                | "set_exact",
                           })
                         )
                       }
                       className={`h-10 rounded-lg border text-[12px] font-medium transition-all ${
                         selected
                           ? type.value ===
-                            "add"
+                            "add_stock"
                             ? "bg-emerald-50 border-emerald-300 text-emerald-700"
                             : type.value ===
                               "remove"
@@ -1898,7 +1880,7 @@ if (isRemove) {
               <label className="text-[12px] font-medium text-[#374151] block mb-1">
 
                 {adjustForm.type ===
-                "set"
+                "set_exact"
                   ? "New Stock Quantity"
                   : "Quantity"}
 
@@ -1941,7 +1923,7 @@ if (isRemove) {
                   <span
                     className={`text-[12px] font-semibold ${
                       adjustForm.type ===
-                      "add"
+                      "add_stock"
                         ? "text-emerald-600"
                         : adjustForm.type ===
                           "remove"
