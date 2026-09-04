@@ -44,7 +44,7 @@ type Adjustment = {
 
 type AdjustmentForm = {
   product_id: string;
-  type: "add" | "remove" | "set";
+  type: "add_stock" | "remove" | "set_exact";
   qty: string;
   reason: string;
   notes: string;
@@ -76,31 +76,31 @@ function fmtQty(value: number) {
 
 const typeBadge = (type: string) => {
   switch (type) {
-    case "add":
+    case "add_stock":
       return (
         <Badge variant="success">
-          + Add
+          + Add Stock
         </Badge>
       );
 
     case "remove":
       return (
         <Badge variant="danger">
-          − Remove
+          − Remove Stock
         </Badge>
       );
 
-    case "set":
+    case "set_exact":
       return (
         <Badge variant="info">
-          ↕ Set
+          ↕ Set Exact
         </Badge>
       );
 
     default:
       return (
         <Badge variant="neutral">
-          {type}
+          {type || "Unknown"}
         </Badge>
       );
   }
@@ -115,7 +115,7 @@ const typeBadge = (type: string) => {
 
 function getMovementColor(type: string) {
   switch (type) {
-    case "add":
+    case "add_stock":
       return {
         bg: "bg-emerald-50",
         text: "text-emerald-600",
@@ -127,7 +127,7 @@ function getMovementColor(type: string) {
         text: "text-red-500",
       };
 
-    case "set":
+    case "set_exact":
       return {
         bg: "bg-indigo-50",
         text: "text-indigo-600",
@@ -213,7 +213,7 @@ export default function StockAdjustments({
 
   const emptyForm: AdjustmentForm = {
     product_id: "",
-    type: "add",
+    type: "add_stock",
     qty: "",
     reason: "",
     notes: "",
@@ -452,32 +452,38 @@ export default function StockAdjustments({
                   "—",
 
                 type: (() => {
-  const before = Number(
-    item.before ??
-      item.stock_before ??
-      0
-  );
-
-  const after = Number(
-    item.after ??
-      item.stock_after ??
-      0
-  );
+  const rawType = String(
+    item.movement_type ??
+      item.type ??
+      ""
+  )
+    .trim()
+    .toLowerCase();
 
   /*
-   * Determine the adjustment type
-   * from the actual stock movement.
+   * ALWAYS use the actual movement_type
+   * stored in the database.
+   *
+   * Do not infer the type from before/after
+   * because Set Exact can also decrease stock.
    */
 
-  if (after > before) {
-    return "add";
-  }
+  switch (rawType) {
+    case "add":
+    case "add_stock":
+      return "add_stock";
 
-  if (after < before) {
-    return "remove";
-  }
+    case "remove":
+    case "remove_stock":
+      return "remove";
 
-  return "set";
+    case "set":
+    case "set_exact":
+      return "set_exact";
+
+    default:
+      return rawType;
+  }
 })(),
 
                 quantity: Number(
@@ -665,7 +671,7 @@ export default function StockAdjustments({
     currentStock;
 
   if (
-    form.type === "add"
+    form.type === "add_stock"
   ) {
 
     newStock =
@@ -684,7 +690,7 @@ export default function StockAdjustments({
       );
 
   } else if (
-    form.type === "set"
+    form.type === "set_exact"
   ) {
 
     newStock =
@@ -707,7 +713,7 @@ export default function StockAdjustments({
 
       setForm({
         product_id: "",
-        type: "add",
+        type: "add_stock",
         qty: "",
         reason: "",
         notes: "",
@@ -940,7 +946,7 @@ export default function StockAdjustments({
     adjustments
       .filter(
         (item) =>
-          item.type === "add"
+          item.type === "add_stock"
       )
       .reduce(
         (sum, item) =>
@@ -1279,7 +1285,7 @@ export default function StockAdjustments({
                         font-bold
                         ${
                           a.type ===
-                          "add"
+                          "add_stock"
                             ? "text-emerald-600"
                             : a.type ===
                               "remove"
@@ -1290,7 +1296,7 @@ export default function StockAdjustments({
                     >
 
                       {a.type ===
-                      "add"
+                      "add_stock"
                         ? "+"
                         : a.type ===
                           "remove"
@@ -1535,7 +1541,7 @@ export default function StockAdjustments({
 
                 {[
                   {
-                    v: "add",
+                    v: "add_stock",
                     l: "Add Stock",
                   },
                   {
@@ -1543,7 +1549,7 @@ export default function StockAdjustments({
                     l: "Remove",
                   },
                   {
-                    v: "set",
+                    v: "set_exact",
                     l: "Set Exact",
                   },
                 ].map(
@@ -1561,9 +1567,9 @@ export default function StockAdjustments({
                             ...f,
                             type:
                               t.v as
-                                | "add"
+                                | "add_stock"
                                 | "remove"
-                                | "set",
+                                | "set_exact",
                           })
                         )
                       }
@@ -1577,7 +1583,7 @@ export default function StockAdjustments({
                           form.type ===
                           t.v
                             ? t.v ===
-                              "add"
+                              "add_stock"
                               ? "bg-emerald-50 border-emerald-300 text-emerald-700"
                               : t.v ===
                                 "remove"
@@ -1605,7 +1611,7 @@ export default function StockAdjustments({
               <label className="text-[12px] font-medium text-[#374151] block mb-1">
 
                 {form.type ===
-                "set"
+                "set_exact"
                   ? "New Stock Quantity"
                   : "Quantity"}
 
@@ -1640,7 +1646,7 @@ export default function StockAdjustments({
                 }
                 placeholder={
                   form.type ===
-                  "set"
+                  "set_exact"
                     ? "Enter new stock"
                     : "Enter quantity"
                 }
@@ -1663,7 +1669,7 @@ export default function StockAdjustments({
                         font-semibold
                         ${
                           form.type ===
-                          "add"
+                          "add_stock"
                             ? "text-emerald-600"
                             : form.type ===
                               "remove"
@@ -1820,7 +1826,7 @@ export default function StockAdjustments({
                         font-bold
                         ${
                           form.type ===
-                          "add"
+                          "add_stock"
                             ? "text-emerald-600"
                             : form.type ===
                               "remove"
@@ -1831,7 +1837,7 @@ export default function StockAdjustments({
                     >
 
                       {form.type ===
-                      "add"
+                      "add_stock"
                         ? "+"
                         : form.type ===
                           "remove"
@@ -2039,7 +2045,7 @@ export default function StockAdjustments({
                   <span className="text-[12px] font-semibold text-[#0F172A]">
 
                     {detailModal.type ===
-                    "add"
+                    "add_stock"
                       ? "+"
                       : detailModal.type ===
                         "remove"
@@ -2047,7 +2053,7 @@ export default function StockAdjustments({
                       : "↕"}
 
                     {fmtQty(
-                      detailModal.quantity
+                      Math.abs(detailModal.quantity)
                     )}
 
                   </span>
@@ -2197,7 +2203,7 @@ export default function StockAdjustments({
               >
 
                 {detailModal.type ===
-                "add"
+                "add_stock"
                   ? "+"
                   : detailModal.type ===
                     "remove"
