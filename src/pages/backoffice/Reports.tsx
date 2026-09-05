@@ -1104,7 +1104,203 @@ export default function Reports({
   */
 
   const printReport = () => {
-    window.print();
+    const source = document.querySelector(
+      ".reports-print-area"
+    ) as HTMLElement | null;
+
+    if (!source) {
+      window.print();
+      return;
+    }
+
+    const printWindow = window.open(
+      "",
+      "_blank",
+      "width=900,height=1100"
+    );
+
+    if (!printWindow) {
+      alert("Please allow pop-ups to print the report.");
+      return;
+    }
+
+    // Copy the report only into a clean print document. This prevents the
+    // dashboard/sidebar layout from shrinking the report in Chrome PDF view.
+    const styles = Array.from(
+      document.querySelectorAll('link[rel="stylesheet"], style')
+    )
+      .map((node) => node.outerHTML)
+      .join("\n");
+
+    printWindow.document.open();
+    printWindow.document.write(`
+      <!doctype html>
+      <html>
+        <head>
+          <meta charset="UTF-8" />
+          <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+          <title>${generatedReport || "Official Business Report"}</title>
+          ${styles}
+          <style>
+            @page {
+              size: A4 portrait;
+              margin: 10mm;
+            }
+
+            html,
+            body {
+              margin: 0 !important;
+              padding: 0 !important;
+              width: 100% !important;
+              min-width: 0 !important;
+              background: #fff !important;
+              color: #111827 !important;
+            }
+
+            body {
+              -webkit-print-color-adjust: exact !important;
+              print-color-adjust: exact !important;
+              font-family: Arial, Helvetica, sans-serif !important;
+            }
+
+            .print-document {
+              width: 190mm !important;
+              max-width: 190mm !important;
+              min-width: 190mm !important;
+              margin: 0 auto !important;
+              padding: 0 !important;
+              box-sizing: border-box !important;
+            }
+
+            .reports-print-area {
+              width: 190mm !important;
+              max-width: 190mm !important;
+              min-width: 190mm !important;
+              margin: 0 !important;
+              padding: 0 !important;
+              border: 0 !important;
+              box-shadow: none !important;
+              border-radius: 0 !important;
+              box-sizing: border-box !important;
+              overflow: visible !important;
+            }
+
+            .reports-print-header {
+              display: block !important;
+              break-inside: avoid !important;
+              page-break-inside: avoid !important;
+            }
+
+            .reports-print-table table {
+              width: 100% !important;
+              max-width: 100% !important;
+              min-width: 0 !important;
+              border-collapse: collapse !important;
+              table-layout: fixed !important;
+            }
+
+            .reports-print-table thead {
+              display: table-header-group !important;
+            }
+
+            .reports-print-table tr {
+              break-inside: avoid !important;
+              page-break-inside: avoid !important;
+            }
+
+            .reports-print-table th,
+            .reports-print-table td {
+              box-sizing: border-box !important;
+              vertical-align: top !important;
+              overflow-wrap: anywhere !important;
+              word-break: break-word !important;
+              font-size: 9px !important;
+              line-height: 1.25 !important;
+              padding: 4px 3px !important;
+              border-bottom: 1px solid #d1d5db !important;
+            }
+
+            .reports-print-table th {
+              font-weight: 700 !important;
+              white-space: nowrap !important;
+            }
+
+            .reports-print-summary {
+              background: #f8fafc !important;
+              border: 1px solid #d1d5db !important;
+              break-inside: avoid !important;
+              page-break-inside: avoid !important;
+            }
+
+            .reports-print-totals,
+            .reports-signatures {
+              break-inside: avoid !important;
+              page-break-inside: avoid !important;
+            }
+
+            .reports-signatures {
+              display: grid !important;
+              grid-template-columns: repeat(3, minmax(0, 1fr)) !important;
+              gap: 10mm !important;
+            }
+
+            .print\:hidden,
+            .reports-print-actions {
+              display: none !important;
+            }
+
+         
+            @media print {
+              html,
+              body,
+              body * {
+                visibility: visible !important;
+              }
+
+              .print-document,
+              .reports-print-area {
+                display: block !important;
+                visibility: visible !important;
+                width: 190mm !important;
+                max-width: 190mm !important;
+                min-width: 0 !important;
+                height: auto !important;
+                max-height: none !important;
+                overflow: visible !important;
+              }
+
+              .reports-print-area * {
+                visibility: visible !important;
+              }
+
+              .print\:hidden,
+              .reports-print-actions {
+                display: none !important;
+              }
+            }
+          </style>
+        </head>
+        <body>
+          <main class="print-document">
+            ${source.outerHTML}
+          </main>
+        </body>
+      </html>
+    `);
+    printWindow.document.close();
+
+    const startPrint = () => {
+      printWindow.focus();
+      printWindow.print();
+    };
+
+    if (printWindow.document.readyState === "complete") {
+      setTimeout(startPrint, 250);
+    } else {
+      printWindow.addEventListener("load", () => {
+        setTimeout(startPrint, 250);
+      }, { once: true });
+    }
   };
 
   const reportTypes: {
@@ -1156,7 +1352,7 @@ export default function Reports({
         @media print {
           @page {
             size: A4 portrait;
-            margin: 8mm;
+            margin: 6mm;
           }
 
           html,
@@ -1184,6 +1380,7 @@ export default function Reports({
             max-width: none !important;
             margin: 0 !important;
             padding: 0 !important;
+            position: static !important;
           }
 
           .reports-screen > *:not(.reports-print-area) {
@@ -1192,16 +1389,34 @@ export default function Reports({
 
           .reports-screen .reports-print-area {
             display: block !important;
-            position: relative !important;
+            position: static !important;
             left: auto !important;
-            top: 0 !important;
-            width: 190mm !important;
-            max-width: 190mm !important;
-            margin: 0 auto !important;
+            top: auto !important;
+            transform: none !important;
+            width: 198mm !important;
+            max-width: 198mm !important;
+            min-width: 198mm !important;
+            margin: 0 !important;
             padding: 0 !important;
             border: 0 !important;
             box-shadow: none !important;
             border-radius: 0 !important;
+            float: none !important;
+          }
+
+          .reports-screen .reports-print-area > * {
+            width: 100% !important;
+            max-width: 100% !important;
+            min-width: 0 !important;
+            margin-left: 0 !important;
+            margin-right: 0 !important;
+            box-sizing: border-box !important;
+          }
+
+          .reports-screen .reports-print-area .reports-table-wrap {
+            width: 100% !important;
+            max-width: 100% !important;
+            overflow: visible !important;
           }
 
           .reports-print-area,
@@ -1220,8 +1435,9 @@ export default function Reports({
 
           .reports-print-table table {
             width: 100% !important;
+            max-width: 100% !important;
             border-collapse: collapse !important;
-            table-layout: auto !important;
+            table-layout: fixed !important;
           }
 
           .reports-print-table thead {
@@ -1231,6 +1447,7 @@ export default function Reports({
           .reports-print-table th,
           .reports-print-table td {
             vertical-align: top !important;
+            overflow-wrap: anywhere !important;
           }
 
           .reports-print-table th {
@@ -1865,7 +2082,7 @@ export default function Reports({
               className="w-full h-9 px-3 text-[12px] rounded-lg border border-[#E2E8F0] bg-white"
             >
               <option value="current">
-                Current Store
+               
                 {reportStores.find(
                   (store) =>
                     store.id === Number(activeStoreId)
@@ -1942,7 +2159,7 @@ export default function Reports({
       </Card>
 
       {generatedReport && generatedData && (
-        <Card className="reports-print-area p-6 print:shadow-none reports-print-table mx-auto">
+        <Card className="reports-print-area p-6 print:shadow-none reports-print-table">
           <div className="reports-print-header border-b-2 border-[#111827] pb-3 mb-4">
             <div className="flex items-start justify-between">
               <div>
