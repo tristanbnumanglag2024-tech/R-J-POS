@@ -173,8 +173,9 @@ export default function Products({
 
   const [products, setProducts] = useState<Product[]>([]);
 
-  // Display-only weighted average purchase cost.
-  // This is calculated from purchase_order_items and never writes to products.cost.
+  // Display-only weighted average inventory cost.
+  // Includes received purchase orders + received store transfers.
+  // Never writes the calculated value into products.cost.
   const [averageCosts, setAverageCosts] =
     useState<AverageCostMap>({});
 
@@ -191,6 +192,13 @@ export default function Products({
 
   const [allStoreProducts, setAllStoreProducts] =
     useState<Product[]>([]);
+
+  // Average cost per product per store for the All Stores view.
+  // Includes purchase receipts and transfer-in cost via the updated API.
+  const [
+    allStoreAverageCosts,
+    setAllStoreAverageCosts,
+  ] = useState<Record<number, AverageCostMap>>({});
 
   const [allStores, setAllStores] =
     useState<Store[]>([]);
@@ -335,50 +343,61 @@ export default function Products({
   | This does NOT update products.cost in MySQL.
   */
 
+  const fetchAverageCostsForStore = async (
+    currentStoreId: number
+  ): Promise<AverageCostMap> => {
+    const response = await fetch(
+      `${API_BASE}/inventory/purchase-average-cost.php?store_id=${encodeURIComponent(
+        String(currentStoreId)
+      )}`,
+      {
+        method: "GET",
+        headers: {
+          Accept: "application/json",
+        },
+      }
+    );
+
+    const text = await response.text();
+    let data: any;
+
+    try {
+      data = JSON.parse(text);
+    } catch {
+      throw new Error(
+        `Average cost API did not return valid JSON:\n${text.substring(
+          0,
+          500
+        )}`
+      );
+    }
+
+    if (!response.ok || !data.success) {
+      throw new Error(
+        data.message ||
+          "Failed to load average purchase costs."
+      );
+    }
+
+    return data.average_costs &&
+      typeof data.average_costs === "object"
+      ? (data.average_costs as AverageCostMap)
+      : {};
+  };
+
   const fetchAverageCosts = async (
     currentStoreId: number
   ) => {
     try {
-      const response = await fetch(
-        `${API_BASE}/inventory/purchase-average-cost.php?store_id=${encodeURIComponent(
-          String(currentStoreId)
-        )}`,
-        {
-          method: "GET",
-          headers: {
-            Accept: "application/json",
-          },
-        }
-      );
-
-      const text = await response.text();
-      let data: any;
-
-      try {
-        data = JSON.parse(text);
-      } catch {
-        throw new Error(
-          `Average cost API did not return valid JSON:\n${text.substring(0, 500)}`
-        );
-      }
-
-      if (!response.ok || !data.success) {
-        throw new Error(
-          data.message ||
-            "Failed to load average purchase costs."
-        );
-      }
-
       const costs =
-        data.average_costs &&
-        typeof data.average_costs === "object"
-          ? data.average_costs
-          : {};
+        await fetchAverageCostsForStore(
+          currentStoreId
+        );
 
-      setAverageCosts(costs as AverageCostMap);
+      setAverageCosts(costs);
     } catch (err) {
       console.warn(
-        "Average purchase cost could not be loaded. Falling back to products.cost:",
+        "Average purchase/transfer cost could not be loaded. Falling back to products.cost:",
         err
       );
 
@@ -546,6 +565,38 @@ export default function Products({
 
       setAllStoreProducts(
         flattenedProducts
+      );
+
+      // Load the updated average cost for EACH store.
+      // The API includes purchase receipts + received transfers.
+      const costEntries = await Promise.all(
+        storeRows.map(async (store) => {
+          try {
+            const costs =
+              await fetchAverageCostsForStore(
+                Number(store.id)
+              );
+
+            return [
+              Number(store.id),
+              costs,
+            ] as const;
+          } catch (err) {
+            console.warn(
+              `Average cost could not be loaded for store ${store.id}:`,
+              err
+            );
+
+            return [
+              Number(store.id),
+              {} as AverageCostMap,
+            ] as const;
+          }
+        })
+      );
+
+      setAllStoreAverageCosts(
+        Object.fromEntries(costEntries)
       );
 
       return {
@@ -1081,6 +1132,7 @@ export default function Products({
 
     setShowAllStores(false);
     setAllStoreProducts([]);
+    setAllStoreAverageCosts({});
     setAllStoresError("");
     setAllStoresSearch("");
   };
@@ -1105,6 +1157,7 @@ export default function Products({
     if (!activeStoreId) {
       setProducts([]);
       setAverageCosts({});
+      setAllStoreAverageCosts({});
       setCategories([]);
       return;
     }
@@ -1215,9 +1268,9 @@ export default function Products({
                 sum +
                 Number(product.stock || 0) *
                   Number(
-                    averageCosts[
-                      String(product.id)
-                    ] ??
+                    allStoreAverageCosts[
+                      Number(product.store_id)
+                    ]?.[String(product.id)] ??
                       product.cost ??
                       0
                   ),
@@ -1233,9 +1286,9 @@ export default function Products({
                   (sum, product) =>
                     sum +
                     Number(
-                      averageCosts[
-                        String(product.id)
-                      ] ??
+                      allStoreAverageCosts[
+                        Number(product.store_id)
+                      ]?.[String(product.id)] ??
                         product.cost ??
                         0
                     ),
@@ -1293,7 +1346,7 @@ export default function Products({
       });
     }, [
       allStoreProducts,
-      averageCosts,
+      allStoreAverageCosts,
       allStoresSearch,
     ]);
 
@@ -2247,7 +2300,7 @@ export default function Products({
                     </span>
                   </Td>
 
-                  {/* COST (WEIGHTED AVERAGE) */}
+                  {/* COST (AVERAGE: PURCHASES + TRANSFER-IN) */}
 
                   <Td>
                     <span className="text-[#64748B]">
@@ -2991,7 +3044,9 @@ export default function Products({
 
                                   const displayCost =
                                     Number(
-                                      averageCosts[
+                                      allStoreAverageCosts[
+                                        Number(product.store_id)
+                                      ]?.[
                                         String(product.id)
                                       ]
                                     );

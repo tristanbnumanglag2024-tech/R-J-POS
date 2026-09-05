@@ -43,6 +43,7 @@ type TransferLine = {
   sku: string;
   qty: number;
   received: number;
+  unitCost: number;
 };
 
 type Transfer = {
@@ -672,6 +673,9 @@ function ReceiveModal({
                     <td className="px-3 py-2.5 text-right text-[11px] text-emerald-600 font-semibold">
                       {fmt(line.received)}
                     </td>
+                    <td className="px-3 py-2.5 text-right text-[11px] font-semibold text-[#475569]">
+                      ₱{Number(line.unitCost || 0).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                    </td>
                     <td className="px-3 py-2.5">
                       <input
                         type="number"
@@ -917,6 +921,9 @@ function DetailModal({
                     Received
                   </th>
                   <th className="px-3 py-2 text-right text-[9px] uppercase text-[#94A3B8]">
+                    Unit Cost
+                  </th>
+                  <th className="px-3 py-2 text-right text-[9px] uppercase text-[#94A3B8]">
                     Remaining
                   </th>
                 </tr>
@@ -937,6 +944,9 @@ function DetailModal({
                     </td>
                     <td className="px-3 py-2.5 text-right text-[11px] font-semibold text-emerald-600">
                       {fmt(line.received)}
+                    </td>
+                    <td className="px-3 py-2.5 text-right text-[11px] font-semibold text-[#475569]">
+                      ₱{Number(line.unitCost || 0).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                     </td>
                     <td className="px-3 py-2.5 text-right text-[11px] font-semibold text-amber-600">
                       {fmt(Math.max(0, line.qty - line.received))}
@@ -1136,9 +1146,37 @@ export default function StoreTransfers({
       )}`
     );
 
-    setTransfers(
-      Array.isArray(data.transfers) ? data.transfers : []
-    );
+    const nextTransfers: Transfer[] = Array.isArray(data.transfers)
+      ? data.transfers.map((transfer: any) => ({
+          id: Number(transfer.id),
+          transferNo: transfer.transferNo || transfer.transfer_no || "",
+          fromStoreId: Number(transfer.fromStoreId ?? transfer.from_store_id),
+          fromStore: transfer.fromStore || "",
+          toStoreId: Number(transfer.toStoreId ?? transfer.to_store_id),
+          toStore: transfer.toStore || "",
+          status: transfer.status as TransferStatus,
+          notes: transfer.notes || "",
+          createdBy: transfer.createdBy || transfer.created_by || "",
+          receivedBy: transfer.receivedBy ?? transfer.received_by ?? null,
+          receivedAt: transfer.receivedAt ?? transfer.received_at ?? null,
+          cancelReason: transfer.cancelReason ?? transfer.cancel_reason ?? null,
+          createdAt: transfer.createdAt || transfer.created_at || "",
+          updatedAt: transfer.updatedAt || transfer.updated_at || "",
+          lines: Array.isArray(transfer.lines)
+            ? transfer.lines.map((line: any) => ({
+                id: Number(line.id),
+                productId: Number(line.source_product_id ?? line.productId ?? 0),
+                name: line.name || line.product_name || "",
+                sku: line.sku || "",
+                qty: Number(line.qty ?? line.quantity ?? 0),
+                received: Number(line.received ?? line.received_quantity ?? 0),
+                unitCost: Number(line.unitCost ?? line.unit_cost ?? 0),
+              }))
+            : [],
+        }))
+      : [];
+
+    setTransfers(nextTransfers);
   };
 
   const refreshAll = async () => {
