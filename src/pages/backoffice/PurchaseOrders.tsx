@@ -57,7 +57,7 @@ type Product = {
 
   category?: string | null;
   supplier?: string | null;
-
+  low_stock_threshold?: number;
   variants?: ProductVariant[];
 };
 
@@ -172,6 +172,18 @@ type ReceiveItemForm = {
 interface PurchaseOrdersProps {
   activeStoreId: number | null;
 }
+
+
+// ============================================================
+// STATISTICS PERIOD
+// ============================================================
+
+type StatsPeriod =
+  | "today"
+  | "week"
+  | "month"
+  | "year"
+  | "all";
 
 // ============================================================
 // HELPERS
@@ -330,6 +342,13 @@ export default function PurchaseOrders({
     useState(false);
 
   // ==========================================================
+  // SUPPLIER AUTOFILL MENU
+  // ==========================================================
+
+  const [showAutofillMenu, setShowAutofillMenu] =
+    useState(false);
+
+  // ==========================================================
   // PAYMENT MODAL
   // ==========================================================
 
@@ -400,6 +419,10 @@ export default function PurchaseOrders({
   const [success, setSuccess] =
     useState("");
 
+
+  const [statsPeriod, setStatsPeriod] =
+    useState<StatsPeriod>("all");
+
   // ==========================================================
   // LOAD PURCHASE ORDERS
   // ==========================================================
@@ -411,70 +434,106 @@ export default function PurchaseOrders({
       setLoadingOrders(true);
       setError("");
 
-      const url =
-        `${API_BASE}/purchase_orders/list.php?store_id=${encodeURIComponent(
-          storeId
-        )}`;
+      /*
+      |--------------------------------------------------------------------------
+      | Load ALL purchase orders
+      |--------------------------------------------------------------------------
+      | The table is paginated in React, so we fetch every API page here.
+      | This keeps the Daily / Weekly / Monthly / Yearly statistics accurate
+      | even when there are more than 100 purchase orders.
+      |--------------------------------------------------------------------------
+      */
 
-      console.log(
-        "Loading Purchase Orders:",
-        url
-      );
+      const pageSize = 100;
+      let currentPage = 1;
+      let allRows: any[] = [];
+      let totalAvailable = 0;
 
-      const response = await fetch(url, {
-        method: "GET",
-        headers: {
-          Accept: "application/json",
-        },
-      });
+      while (true) {
+        const url =
+          `${API_BASE}/purchase_orders/list.php?store_id=${encodeURIComponent(
+            storeId
+          )}&page=${currentPage}&limit=${pageSize}`;
 
-      const text =
-        await response.text();
-
-      console.log(
-        "Purchase Orders RAW response:",
-        text
-      );
-
-      let data: any;
-
-      try {
-        data = JSON.parse(text);
-      } catch {
-        throw new Error(
-          `Purchase Orders API did not return valid JSON:\n${text.substring(
-            0,
-            500
-          )}`
+        console.log(
+          "Loading Purchase Orders:",
+          url
         );
-      }
 
-      console.log(
-        "Purchase Orders API response:",
-        data
-      );
+        const response = await fetch(url, {
+          method: "GET",
+          headers: {
+            Accept: "application/json",
+          },
+        });
 
-      if (
-        !response.ok ||
-        !data.success
-      ) {
-        throw new Error(
-          data.message ||
-            `Failed to load purchase orders. Server returned ${response.status}.`
+        const text =
+          await response.text();
+
+        console.log(
+          "Purchase Orders RAW response:",
+          text
         );
-      }
 
-      const rows =
-        Array.isArray(data.orders)
-          ? data.orders
-          : Array.isArray(
-              data.purchase_orders
-            )
-          ? data.purchase_orders
-          : [];
+        let data: any;
+
+        try {
+          data = JSON.parse(text);
+        } catch {
+          throw new Error(
+            `Purchase Orders API did not return valid JSON:
+${text.substring(
+              0,
+              500
+            )}`
+          );
+        }
+
+        console.log(
+          "Purchase Orders API response:",
+          data
+        );
+
+        if (
+          !response.ok ||
+          !data.success
+        ) {
+          throw new Error(
+            data.message ||
+              `Failed to load purchase orders. Server returned ${response.status}.`
+          );
+        }
+
+        const rows =
+          Array.isArray(data.orders)
+            ? data.orders
+            : Array.isArray(
+                data.purchase_orders
+              )
+            ? data.purchase_orders
+            : [];
+
+        allRows = [
+          ...allRows,
+          ...rows,
+        ];
+
+        totalAvailable =
+          Number(data.total ?? 0);
+
+        if (
+          rows.length === 0 ||
+          allRows.length >= totalAvailable ||
+          rows.length < pageSize
+        ) {
+          break;
+        }
+
+        currentPage += 1;
+      }
 
       const normalized: PurchaseOrder[] =
-        rows.map((order: any) => {
+        allRows.map((order: any) => {
           const total = Number(
             order.total ??
               order.grand_total ??
@@ -953,10 +1012,77 @@ export default function PurchaseOrders({
   // STATISTICS
   // ==========================================================
 
+  const statsOrders =
+    useMemo(() => {
+      if (statsPeriod === "all") {
+        return orders;
+      }
+
+      const now = new Date();
+
+      const start = new Date(
+        now.getFullYear(),
+        now.getMonth(),
+        now.getDate()
+      );
+
+      if (statsPeriod === "week") {
+        const day = start.getDay();
+        const daysFromMonday =
+          day === 0 ? 6 : day - 1;
+
+        start.setDate(
+          start.getDate() -
+            daysFromMonday
+        );
+      }
+
+      if (statsPeriod === "month") {
+        start.setDate(1);
+      }
+
+      if (statsPeriod === "year") {
+        start.setMonth(0, 1);
+      }
+
+      return orders.filter((order) => {
+        const rawDate =
+          order.order_date ||
+          order.created_at ||
+          "";
+
+        if (!rawDate) {
+          return false;
+        }
+
+        const dateOnlyMatch =
+          String(rawDate).match(
+            /^\d{4}-\d{2}-\d{2}/
+          );
+
+        const orderDate =
+          dateOnlyMatch
+            ? new Date(
+                `${dateOnlyMatch[0]}T00:00:00`
+              )
+            : new Date(rawDate);
+
+        if (
+          Number.isNaN(
+            orderDate.getTime()
+          )
+        ) {
+          return false;
+        }
+
+        return orderDate >= start;
+      });
+    }, [orders, statsPeriod]);
+
   const totalOrdered =
     useMemo(
       () =>
-        orders.reduce(
+        statsOrders.reduce(
           (sum, order) =>
             sum +
             Number(
@@ -964,13 +1090,13 @@ export default function PurchaseOrders({
             ),
           0
         ),
-      [orders]
+      [statsOrders]
     );
 
   const totalPaid =
     useMemo(
       () =>
-        orders.reduce(
+        statsOrders.reduce(
           (sum, order) =>
             sum +
             Number(
@@ -978,18 +1104,51 @@ export default function PurchaseOrders({
             ),
           0
         ),
-      [orders]
+      [statsOrders]
     );
 
+  /*
+  | Outstanding is based only on active purchase orders.
+  | Cancelled POs must never contribute an unpaid balance.
+  */
   const outstanding =
-    Math.max(
-      0,
-      totalOrdered -
-        totalPaid
+    useMemo(
+      () =>
+        statsOrders.reduce(
+          (sum, order) => {
+            if (
+              order.status ===
+              "cancelled"
+            ) {
+              return sum;
+            }
+
+            const balance =
+              Number(
+                order.balance ??
+                  Number(
+                    order.total || 0
+                  ) -
+                    Number(
+                      order.paid || 0
+                    )
+              );
+
+            return (
+              sum +
+              Math.max(
+                0,
+                balance
+              )
+            );
+          },
+          0
+        ),
+      [statsOrders]
     );
 
   const pendingDelivery =
-    orders.filter(
+    statsOrders.filter(
       (order) =>
         order.status ===
           "pending" ||
@@ -1036,6 +1195,7 @@ export default function PurchaseOrders({
     setError("");
     setSuccess("");
 
+    setShowAutofillMenu(false);
     setShowCreate(true);
   };
 
@@ -1049,6 +1209,7 @@ export default function PurchaseOrders({
     }
 
     setShowCreate(false);
+    setShowAutofillMenu(false);
 
     setForm({
       supplier_id: null,
@@ -1179,6 +1340,125 @@ export default function PurchaseOrders({
             ),
         };
       }
+    );
+  };
+
+  // ==========================================================
+  // AUTOFILL PRODUCTS FROM SELECTED SUPPLIER
+  // ==========================================================
+
+  const autoFillSupplierProducts = (
+    mode: "all" | "low_stock"
+  ) => {
+    setShowAutofillMenu(false);
+    setError("");
+
+    if (!form.supplier_id) {
+      setError(
+        "Please select a supplier first before using Auto Fill."
+      );
+      return;
+    }
+
+    /*
+    | Products are already loaded for the active store and contain
+    | supplier_id. We only use existing product rows; nothing is
+    | created or written to the database by Auto Fill.
+    */
+    const supplierProducts = products.filter(
+      (product) =>
+        Number(product.supplier_id ?? 0) ===
+        Number(form.supplier_id) &&
+        (!product.status || product.status === "active")
+    );
+
+    const matchingProducts =
+      mode === "low_stock"
+        ? supplierProducts.filter(
+            (product) =>
+              Number(product.stock ?? 0) <=
+              Number(product.low_stock_threshold ?? 0)
+          )
+        : supplierProducts;
+
+    if (matchingProducts.length === 0) {
+      setError(
+        mode === "low_stock"
+          ? "No low stock products were found for this supplier."
+          : "No products were found for this supplier in the selected store."
+      );
+      return;
+    }
+
+    setForm((previous) => {
+      const existingIds = new Set(
+        previous.items
+          .map((item) => item.product_id)
+          .filter(
+            (id): id is number => id !== null
+          )
+      );
+
+      const additions: POFormItem[] =
+        matchingProducts
+          .filter(
+            (product) =>
+              !existingIds.has(Number(product.id))
+          )
+          .map((product) => {
+            const stock = Number(
+              product.stock ?? 0
+            );
+
+            const minimum = Number(
+              product.low_stock_threshold ?? 0
+            );
+
+            const suggestedQuantity =
+              mode === "low_stock"
+                ? Math.max(
+                    1,
+                    minimum - stock
+                  )
+                : 1;
+
+            return {
+              product_id:
+                Number(product.id),
+              quantity:
+                suggestedQuantity,
+              unit_cost:
+                getProductCost(product),
+            };
+          });
+
+      if (additions.length === 0) {
+        return previous;
+      }
+
+      /*
+      | If the form is still the initial empty row,
+      | replace that row instead of leaving an empty item.
+      */
+      const hasOnlyEmptyRow =
+        previous.items.length === 1 &&
+        previous.items[0].product_id === null;
+
+      return {
+        ...previous,
+        items: hasOnlyEmptyRow
+          ? additions
+          : [
+              ...previous.items,
+              ...additions,
+            ],
+      };
+    });
+
+    setSuccess(
+      mode === "low_stock"
+        ? "Low stock products from the selected supplier were added."
+        : "All products from the selected supplier were added."
     );
   };
 
@@ -2686,7 +2966,56 @@ export default function PurchaseOrders({
       ======================================================= */}
 
       {activeStoreId && (
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+        <>
+          <div className="flex items-center justify-between gap-3">
+            <div>
+              <p className="text-[12px] font-semibold text-[#0F172A]">
+                Purchase Order Summary
+              </p>
+
+              <p className="text-[10px] text-[#94A3B8] mt-0.5">
+                Financial totals by order date
+              </p>
+            </div>
+
+            <div className="flex items-center gap-2">
+              <span className="text-[11px] text-[#64748B]">
+                Period
+              </span>
+
+              <select
+                value={statsPeriod}
+                onChange={(event) => {
+                  setStatsPeriod(
+                    event.target.value as StatsPeriod
+                  );
+                }}
+                className="h-8 px-3 text-[11px] rounded-lg border border-[#E2E8F0] bg-white text-[#334155] focus:outline-none focus:border-[#4F46E5]"
+              >
+                <option value="today">
+                  Daily
+                </option>
+
+                <option value="week">
+                  Weekly
+                </option>
+
+                <option value="month">
+                  Monthly
+                </option>
+
+                <option value="year">
+                  Yearly
+                </option>
+
+                <option value="all">
+                  All Time
+                </option>
+              </select>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
 
           <Card className="px-5 py-4">
             <p className="text-[11px] text-[#64748B] mb-1">
@@ -2731,7 +3060,8 @@ export default function PurchaseOrders({
             </p>
           </Card>
 
-        </div>
+          </div>
+        </>
       )}
 
       {/* ======================================================
@@ -4273,15 +4603,70 @@ export default function PurchaseOrders({
 
                 </div>
 
-                <button
-                  type="button"
-                  onClick={
-                    addItem
-                  }
-                  className="text-[12px] text-[#4F46E5] font-semibold hover:text-[#4338CA]"
-                >
-                  + Add Item
-                </button>
+                <div className="relative flex items-center gap-2">
+
+                  {/* AUTO FILL */}
+
+                  <button
+                    type="button"
+                    disabled={!form.supplier_id || loadingProducts}
+                    onClick={() =>
+                      setShowAutofillMenu(
+                        (current) => !current
+                      )
+                    }
+                    className="h-8 px-3 rounded-lg border border-[#E2E8F0] bg-white text-[11px] font-semibold text-[#475569] hover:bg-[#F8FAFC] disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    Auto Fill
+                  </button>
+
+                  {showAutofillMenu && (
+                    <div className="absolute right-0 top-10 z-30 w-64 rounded-xl border border-[#E2E8F0] bg-white shadow-xl overflow-hidden">
+
+                      <button
+                        type="button"
+                        onClick={() =>
+                          autoFillSupplierProducts("all")
+                        }
+                        className="w-full px-3 py-3 text-left hover:bg-[#F8FAFC] border-b border-[#F1F5F9]"
+                      >
+                        <p className="text-[12px] font-semibold text-[#0F172A]">
+                          All products from this supplier
+                        </p>
+                        <p className="text-[10px] text-[#94A3B8] mt-0.5">
+                          Add every active product assigned to the selected supplier.
+                        </p>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() =>
+                          autoFillSupplierProducts("low_stock")
+                        }
+                        className="w-full px-3 py-3 text-left hover:bg-[#F8FAFC]"
+                      >
+                        <p className="text-[12px] font-semibold text-[#0F172A]">
+                          Low stock products from supplier
+                        </p>
+                        <p className="text-[10px] text-[#94A3B8] mt-0.5">
+                          Add products at or below their minimum stock level.
+                        </p>
+                      </button>
+
+                    </div>
+                  )}
+
+                  <button
+                    type="button"
+                    onClick={
+                      addItem
+                    }
+                    className="text-[12px] text-[#4F46E5] font-semibold hover:text-[#4338CA]"
+                  >
+                    + Add Item
+                  </button>
+
+                </div>
 
               </div>
 

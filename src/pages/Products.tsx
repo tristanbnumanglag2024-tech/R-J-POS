@@ -16,6 +16,14 @@ interface ProductsProps {
   activeStoreId: number | null;
 }
 
+type AverageCostMap = Record<string, number>;
+
+interface Store {
+  id: number;
+  store_name: string;
+  branch_name?: string;
+  status?: string;
+}
 interface Category {
   id: number;
   store_id: number;
@@ -116,6 +124,43 @@ function getInitials(name: string) {
     .toUpperCase();
 }
 
+function getCategoryName(
+  product: Product,
+  categories: Category[]
+) {
+  // Prefer the category name returned directly by products/list.php.
+  if (product.category_name?.trim()) {
+    return product.category_name.trim();
+  }
+
+  // Otherwise resolve category_id against the categories endpoint.
+  if (product.category_id !== null && product.category_id !== undefined) {
+    const categoryId = Number(product.category_id);
+    const storeId = Number(product.store_id);
+
+    const category = categories.find(
+      (item) =>
+        Number(item.id) === categoryId &&
+        Number(item.store_id) === storeId
+    );
+
+    if (category?.name?.trim()) {
+      return category.name.trim();
+    }
+
+    // Extra fallback in case an older categories API omits store_id.
+    const categoryById = categories.find(
+      (item) => Number(item.id) === categoryId
+    );
+
+    if (categoryById?.name?.trim()) {
+      return categoryById.name.trim();
+    }
+  }
+
+  return "—";
+}
+
 export default function Products({
   onAddProduct,
   activeStoreId,
@@ -127,7 +172,43 @@ export default function Products({
   */
 
   const [products, setProducts] = useState<Product[]>([]);
+
+  // Display-only weighted average purchase cost.
+  // This is calculated from purchase_order_items and never writes to products.cost.
+  const [averageCosts, setAverageCosts] =
+    useState<AverageCostMap>({});
+
   const [categories, setCategories] = useState<Category[]>([]);
+
+  /*
+  |--------------------------------------------------------------------------
+  | ALL STORE VIEW
+  |--------------------------------------------------------------------------
+  */
+
+  const [showAllStores, setShowAllStores] =
+    useState(false);
+
+  const [allStoreProducts, setAllStoreProducts] =
+    useState<Product[]>([]);
+
+  const [allStores, setAllStores] =
+    useState<Store[]>([]);
+
+  const [loadingAllStores, setLoadingAllStores] =
+    useState(false);
+
+  const [allStoresError, setAllStoresError] =
+    useState("");
+
+  const [allStoresSearch, setAllStoresSearch] =
+    useState("");
+
+  const [showExportModal, setShowExportModal] =
+    useState(false);
+
+  const [exportLoading, setExportLoading] =
+    useState(false);
 
   const [loading, setLoading] = useState(false);
   const [loadingCategories, setLoadingCategories] =
@@ -229,6 +310,69 @@ export default function Products({
 
   /*
   |--------------------------------------------------------------------------
+  | LOAD DISPLAY-ONLY AVERAGE PURCHASE COST
+  |--------------------------------------------------------------------------
+  | Formula:
+  | SUM(received_quantity * unit_cost) /
+  | SUM(received_quantity)
+  |
+  | IMPORTANT:
+  | This does NOT update products.cost in MySQL.
+  */
+
+  const fetchAverageCosts = async (
+    currentStoreId: number
+  ) => {
+    try {
+      const response = await fetch(
+        `${API_BASE}/inventory/purchase-average-cost.php?store_id=${encodeURIComponent(
+          String(currentStoreId)
+        )}`,
+        {
+          method: "GET",
+          headers: {
+            Accept: "application/json",
+          },
+        }
+      );
+
+      const text = await response.text();
+      let data: any;
+
+      try {
+        data = JSON.parse(text);
+      } catch {
+        throw new Error(
+          `Average cost API did not return valid JSON:\n${text.substring(0, 500)}`
+        );
+      }
+
+      if (!response.ok || !data.success) {
+        throw new Error(
+          data.message ||
+            "Failed to load average purchase costs."
+        );
+      }
+
+      const costs =
+        data.average_costs &&
+        typeof data.average_costs === "object"
+          ? data.average_costs
+          : {};
+
+      setAverageCosts(costs as AverageCostMap);
+    } catch (err) {
+      console.warn(
+        "Average purchase cost could not be loaded. Falling back to products.cost:",
+        err
+      );
+
+      setAverageCosts({});
+    }
+  };
+
+  /*
+  |--------------------------------------------------------------------------
   | LOAD CATEGORIES
   |--------------------------------------------------------------------------
   */
@@ -257,8 +401,7 @@ export default function Products({
           ? data.categories.filter(
               (category: Category) =>
                 Number(category.store_id) ===
-                  Number(currentStoreId) &&
-                category.status === "active"
+                Number(currentStoreId)
             )
           : [];
 
@@ -273,6 +416,358 @@ export default function Products({
     } finally {
       setLoadingCategories(false);
     }
+  };
+
+  /*
+  |--------------------------------------------------------------------------
+  | LOAD ALL STORES + ALL PRODUCTS
+  |--------------------------------------------------------------------------
+  | Display-only view.
+  | No database rows are created or modified.
+  |
+  | Products with the same normalized name are grouped together in the
+  | modal and shown with their existing store records.
+  */
+
+  const openAllStores = async (): Promise<{ stores: Store[]; products: Product[] }> => {
+    try {
+      setShowAllStores(true);
+      setLoadingAllStores(true);
+      setAllStoresError("");
+      setAllStoresSearch("");
+
+      const storesResponse = await fetch(
+        `${API_BASE}/stores/list.php`,
+        {
+          method: "GET",
+          headers: {
+            Accept: "application/json",
+          },
+        }
+      );
+
+      const storesData =
+        await storesResponse.json();
+
+      if (
+        !storesResponse.ok ||
+        !storesData.success
+      ) {
+        throw new Error(
+          storesData.message ||
+            "Failed to load stores."
+        );
+      }
+
+      const storeRows: Store[] =
+        Array.isArray(storesData.stores)
+          ? storesData.stores
+              .map((store: any) => ({
+                id: Number(store.id),
+                store_name:
+                  store.store_name ||
+                  `Store #${store.id}`,
+                branch_name:
+                  store.branch_name ||
+                  "",
+                status:
+                  store.status ||
+                  "active",
+              }))
+              .filter(
+                (store: Store) =>
+                  Number.isInteger(store.id) &&
+                  store.id > 0
+              )
+          : [];
+
+      setAllStores(storeRows);
+
+      const productResults =
+        await Promise.all(
+          storeRows.map(async (store) => {
+            const response =
+              await fetch(
+                `${API_BASE}/products/list.php?store_id=${encodeURIComponent(
+                  String(store.id)
+                )}`,
+                {
+                  method: "GET",
+                  headers: {
+                    Accept:
+                      "application/json",
+                  },
+                }
+              );
+
+            const data =
+              await response.json();
+
+            if (
+              !response.ok ||
+              !data.success
+            ) {
+              throw new Error(
+                data.message ||
+                  `Failed to load products for ${store.store_name}.`
+              );
+            }
+
+            const rows =
+              Array.isArray(data.products)
+                ? data.products
+                : [];
+
+            return rows.filter(
+              (product: Product) =>
+                Number(product.store_id) ===
+                Number(store.id)
+            );
+          })
+        );
+
+      const flattenedProducts =
+        productResults.flat();
+
+      setAllStoreProducts(
+        flattenedProducts
+      );
+
+      return {
+        stores: storeRows,
+        products: flattenedProducts,
+      };
+    } catch (err) {
+      console.error(
+        "Load all-store products error:",
+        err
+      );
+
+      setAllStoreProducts([]);
+
+      setAllStoresError(
+        err instanceof Error
+          ? err.message
+          : "Unable to load products across stores."
+      );
+
+      return {
+        stores: [],
+        products: [],
+      };
+    } finally {
+      setLoadingAllStores(false);
+    }
+  };
+
+  /*
+  |--------------------------------------------------------------------------
+  | EXPORT HELPERS
+  |--------------------------------------------------------------------------
+  */
+
+  const csvEscape = (value: unknown) => {
+    const text = String(value ?? "");
+    return `"${text.replace(/"/g, '""')}"`;
+  };
+
+  const downloadCsv = (
+    filename: string,
+    headers: string[],
+    rows: unknown[][]
+  ) => {
+    const csv = [
+      headers.map(csvEscape).join(","),
+      ...rows.map((row) =>
+        row.map(csvEscape).join(",")
+      ),
+    ].join("\r\n");
+
+    const blob = new Blob(
+      ["\uFEFF" + csv],
+      { type: "text/csv;charset=utf-8;" }
+    );
+
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+
+    link.href = url;
+    link.download = filename;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(url);
+  };
+
+  const exportCurrentStore = () => {
+    if (!activeStoreId) {
+      setError("No store selected.");
+      return;
+    }
+
+    const rows = products.map((product) => {
+      const averageCost =
+        averageCosts[String(product.id)] !== undefined
+          ? Number(averageCosts[String(product.id)])
+          : Number(product.cost || 0);
+
+      return [
+        product.name,
+        product.sku || "",
+        product.barcode || "",
+        getCategoryName(product, categories),
+        Number(product.price || 0).toFixed(2),
+        averageCost.toFixed(2),
+        Number(product.stock || 0),
+        product.status,
+        (Number(product.stock || 0) * averageCost).toFixed(2),
+      ];
+    });
+
+    downloadCsv(
+      `products-store-${activeStoreId}-${new Date().toISOString().slice(0, 10)}.csv`,
+      [
+        "Product",
+        "SKU",
+        "Barcode",
+        "Category",
+        "Price",
+        "Cost (Average)",
+        "Stock",
+        "Status",
+        "Inventory Value",
+      ],
+      rows
+    );
+
+    setShowExportModal(false);
+    setSuccess("Current store products exported successfully.");
+  };
+
+  const exportAllStores = async () => {
+    if (exportLoading) return;
+
+    try {
+      setExportLoading(true);
+      setError("");
+
+      let stores = allStores;
+      let storeProducts = allStoreProducts;
+
+      if (stores.length === 0) {
+        const snapshot = await openAllStores();
+        stores = snapshot.stores;
+        storeProducts = snapshot.products;
+      }
+
+      if (stores.length === 0) {
+        throw new Error("No stores were found.");
+      }
+
+      const costMaps = await Promise.all(
+        stores.map(async (store) => {
+          try {
+            const response = await fetch(
+              `${API_BASE}/inventory/purchase-average-cost.php?store_id=${encodeURIComponent(String(store.id))}`,
+              {
+                headers: {
+                  Accept: "application/json",
+                },
+              }
+            );
+
+            const data = await response.json();
+            const costs =
+              data?.success &&
+              data?.average_costs &&
+              typeof data.average_costs === "object"
+                ? (data.average_costs as AverageCostMap)
+                : {};
+
+            return [store.id, costs] as const;
+          } catch {
+            return [store.id, {} as AverageCostMap] as const;
+          }
+        })
+      );
+
+      const averageCostsByStore = new Map<number, AverageCostMap>(
+        costMaps
+      );
+
+      const rows = storeProducts.map((product) => {
+        const store = stores.find(
+          (item) =>
+            Number(item.id) === Number(product.store_id)
+        );
+
+        const storeAverageCosts =
+          averageCostsByStore.get(
+            Number(product.store_id)
+          ) || {};
+
+        const averageCost =
+          storeAverageCosts[String(product.id)] !== undefined
+            ? Number(
+                storeAverageCosts[String(product.id)]
+              )
+            : Number(product.cost || 0);
+
+        return [
+          store?.store_name || `Store #${product.store_id}`,
+          store?.branch_name || "",
+          product.name,
+          product.sku || "",
+          product.barcode || "",
+          getCategoryName(product, categories),
+          Number(product.price || 0).toFixed(2),
+          averageCost.toFixed(2),
+          Number(product.stock || 0),
+          product.status,
+          (Number(product.stock || 0) * averageCost).toFixed(2),
+        ];
+      });
+
+      downloadCsv(
+        `products-all-stores-${new Date().toISOString().slice(0, 10)}.csv`,
+        [
+          "Store",
+          "Branch",
+          "Product",
+          "SKU",
+          "Barcode",
+          "Category",
+          "Price",
+          "Cost (Average)",
+          "Stock",
+          "Status",
+          "Inventory Value",
+        ],
+        rows
+      );
+
+      setShowExportModal(false);
+      setSuccess("All store products exported successfully.");
+    } catch (err) {
+      setError(
+        err instanceof Error
+          ? err.message
+          : "Failed to export products."
+      );
+    } finally {
+      setExportLoading(false);
+    }
+  };
+
+  const closeAllStores = () => {
+    if (loadingAllStores) {
+      return;
+    }
+
+    setShowAllStores(false);
+    setAllStoreProducts([]);
+    setAllStoresError("");
+    setAllStoresSearch("");
   };
 
   /*
@@ -294,11 +789,13 @@ export default function Products({
 
     if (!activeStoreId) {
       setProducts([]);
+      setAverageCosts({});
       setCategories([]);
       return;
     }
 
     fetchProducts(activeStoreId);
+    fetchAverageCosts(activeStoreId);
     fetchCategories(activeStoreId);
   }, [activeStoreId]);
 
@@ -349,6 +846,144 @@ export default function Products({
 
   /*
   |--------------------------------------------------------------------------
+  | GROUP ALL-STORE PRODUCTS BY SAME NAME
+  |--------------------------------------------------------------------------
+  | Existing product rows are grouped only for display.
+  | Nothing is inserted or merged in the database.
+  */
+
+  const groupedAllStoreProducts =
+    useMemo(() => {
+      const groups = new Map<
+        string,
+        Product[]
+      >();
+
+      allStoreProducts.forEach((product) => {
+        const key = product.name
+          .trim()
+          .toLowerCase();
+
+        if (!key) {
+          return;
+        }
+
+        const existing =
+          groups.get(key) || [];
+
+        existing.push(product);
+        groups.set(key, existing);
+      });
+
+      const allGroups = Array.from(
+        groups.entries()
+      )
+        .map(([key, storeProducts]) => {
+          const sorted =
+            [...storeProducts].sort(
+              (a, b) =>
+                Number(a.store_id) -
+                Number(b.store_id)
+            );
+
+          const totalStock =
+            sorted.reduce(
+              (sum, product) =>
+                sum +
+                Number(product.stock || 0),
+              0
+            );
+
+          const weightedStockCost =
+            sorted.reduce(
+              (sum, product) =>
+                sum +
+                Number(product.stock || 0) *
+                  Number(
+                    averageCosts[
+                      String(product.id)
+                    ] ??
+                      product.cost ??
+                      0
+                  ),
+              0
+            );
+
+          const averageCost =
+            totalStock > 0
+              ? weightedStockCost /
+                totalStock
+              : sorted.length > 0
+              ? sorted.reduce(
+                  (sum, product) =>
+                    sum +
+                    Number(
+                      averageCosts[
+                        String(product.id)
+                      ] ??
+                        product.cost ??
+                        0
+                    ),
+                  0
+                ) / sorted.length
+              : 0;
+
+          return {
+            key,
+            name:
+              sorted[0]?.name ||
+              "Unnamed Product",
+            sku:
+              sorted[0]?.sku ||
+              "—",
+            totalStock,
+            averageCost,
+            stores: sorted,
+          };
+        })
+        .sort((a, b) =>
+          a.name.localeCompare(b.name)
+        );
+
+      const searchValue =
+        allStoresSearch
+          .trim()
+          .toLowerCase();
+
+      if (!searchValue) {
+        return allGroups;
+      }
+
+      return allGroups.filter((group) => {
+        const matchesGroup =
+          group.name
+            .toLowerCase()
+            .includes(searchValue) ||
+          group.sku
+            .toLowerCase()
+            .includes(searchValue);
+
+        if (matchesGroup) {
+          return true;
+        }
+
+        return group.stores.some((product) =>
+          String(product.sku ?? "")
+            .toLowerCase()
+            .includes(searchValue) ||
+          String(product.barcode ?? "")
+            .toLowerCase()
+            .includes(searchValue)
+        );
+      });
+    }, [
+      allStoreProducts,
+      averageCosts,
+      allStoresSearch,
+    ]);
+
+  /*
+  |--------------------------------------------------------------------------
   | PAGINATION
   |--------------------------------------------------------------------------
   */
@@ -380,7 +1015,10 @@ export default function Products({
   const refreshProducts = async () => {
     if (!activeStoreId) return;
 
-    await fetchProducts(activeStoreId);
+    await Promise.all([
+      fetchProducts(activeStoreId),
+      fetchAverageCosts(activeStoreId),
+    ]);
   };
 
   /*
@@ -1012,6 +1650,26 @@ export default function Products({
           </Button>
 
           <Button
+            variant="secondary"
+            size="sm"
+            onClick={() => setShowExportModal(true)}
+            disabled={exportLoading}
+          >
+            Export
+          </Button>
+
+          <Button
+            variant="secondary"
+            size="sm"
+            onClick={openAllStores}
+            disabled={loadingAllStores}
+          >
+            {loadingAllStores
+              ? "Loading Stores..."
+              : "View All Stores"}
+          </Button>
+
+          <Button
             variant="primary"
             size="sm"
             onClick={onAddProduct}
@@ -1179,7 +1837,7 @@ export default function Products({
                 "Barcode",
                 "Category",
                 "Price",
-                "Cost",
+                "Cost (Average)",
                 "Stock",
                 "Status",
                 "Actions",
@@ -1246,8 +1904,7 @@ export default function Products({
 
                   <Td>
                     <span className="text-[#475569]">
-                      {product.category_name ||
-                        "—"}
+                      {getCategoryName(product, categories)}
                     </span>
                   </Td>
 
@@ -1259,11 +1916,16 @@ export default function Products({
                     </span>
                   </Td>
 
-                  {/* COST */}
+                  {/* COST (WEIGHTED AVERAGE) */}
 
                   <Td>
                     <span className="text-[#64748B]">
-                      {fmt(product.cost)}
+                      {fmt(
+                        averageCosts[String(product.id)] !==
+                          undefined
+                          ? averageCosts[String(product.id)]
+                          : product.cost
+                      )}
                     </span>
                   </Td>
 
@@ -1507,8 +2169,7 @@ export default function Products({
                   </h4>
 
                   <p className="text-[12px] text-[#64748B]">
-                    {viewProduct.category_name ||
-                      "No category"}
+                    {getCategoryName(viewProduct, categories)}
                   </p>
                 </div>
 
@@ -1540,9 +2201,12 @@ export default function Products({
                 />
 
                 <Info
-                  label="Cost"
+                  label="Cost (Average)"
                   value={fmt(
-                    viewProduct.cost
+                    averageCosts[String(viewProduct.id)] !==
+                      undefined
+                      ? averageCosts[String(viewProduct.id)]
+                      : viewProduct.cost
                   )}
                 />
 
@@ -1620,6 +2284,320 @@ export default function Products({
 
           </div>
 
+        </div>
+      )}
+
+      {/* EXPORT MODAL */}
+
+      {showExportModal && (
+        <div className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-[420px]">
+            <div className="flex items-center justify-between px-5 py-4 border-b border-[#E2E8F0]">
+              <div>
+                <h3 className="text-[15px] font-bold text-[#0F172A]">
+                  Export Products
+                </h3>
+                <p className="text-[11px] text-[#64748B] mt-0.5">
+                  Choose which stores to include in the CSV export.
+                </p>
+              </div>
+
+              <button
+                type="button"
+                onClick={() => setShowExportModal(false)}
+                disabled={exportLoading}
+                className="w-8 h-8 rounded-lg hover:bg-slate-100 text-slate-500 disabled:opacity-50"
+              >
+                ×
+              </button>
+            </div>
+
+            <div className="p-5 space-y-3">
+              <button
+                type="button"
+                onClick={exportCurrentStore}
+                disabled={exportLoading}
+                className="w-full text-left rounded-xl border border-[#E2E8F0] p-4 hover:border-[#C7D2FE] hover:bg-[#F8FAFC] transition-colors disabled:opacity-50"
+              >
+                <p className="text-[13px] font-semibold text-[#0F172A]">
+                  Current Store Only
+                </p>
+                <p className="text-[11px] text-[#64748B] mt-1">
+                  Export products from the currently selected store.
+                </p>
+              </button>
+
+              <button
+                type="button"
+                onClick={exportAllStores}
+                disabled={exportLoading}
+                className="w-full text-left rounded-xl border border-[#C7D2FE] bg-[#F8FAFC] p-4 hover:bg-[#EEF2FF] transition-colors disabled:opacity-50"
+              >
+                <p className="text-[13px] font-semibold text-[#4F46E5]">
+                  All Stores
+                </p>
+                <p className="text-[11px] text-[#64748B] mt-1">
+                  Export existing product records from every store, including average cost.
+                </p>
+              </button>
+
+              {exportLoading && (
+                <p className="text-[11px] text-center text-[#64748B]">
+                  Preparing export...
+                </p>
+              )}
+
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => setShowExportModal(false)}
+                disabled={exportLoading}
+              >
+                Cancel
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ALL STORES MODAL */}
+
+      {showAllStores && (
+        <div className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-[1000px] max-h-[90vh] overflow-hidden">
+
+            <div className="flex items-center justify-between px-5 py-4 border-b border-[#E2E8F0]">
+              <div>
+                <h3 className="text-[15px] font-bold text-[#0F172A]">
+                  Products Across All Stores
+                </h3>
+
+                <p className="text-[11px] text-[#64748B] mt-0.5">
+                  Existing product records grouped by the same product name. No new data is created.
+                </p>
+              </div>
+
+              <button
+                type="button"
+                onClick={closeAllStores}
+                disabled={loadingAllStores}
+                className="w-8 h-8 rounded-lg hover:bg-slate-100 text-slate-500 disabled:opacity-50"
+              >
+                ×
+              </button>
+            </div>
+
+            <div className="p-5 overflow-y-auto max-h-[calc(90vh-76px)]">
+
+              <div className="mb-4">
+                <SearchBar
+                  value={allStoresSearch}
+                  onChange={setAllStoresSearch}
+                  placeholder="Search product name, SKU or barcode..."
+                />
+              </div>
+
+              {allStoresError && (
+                <div className="mb-4 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-[12px] text-red-700">
+                  {allStoresError}
+                </div>
+              )}
+
+              {loadingAllStores ? (
+                <div className="py-16 text-center">
+                  <div className="w-7 h-7 mx-auto border-2 border-[#E2E8F0] border-t-[#4F46E5] rounded-full animate-spin" />
+                  <p className="text-[12px] text-[#64748B] mt-3">
+                    Loading products from all stores...
+                  </p>
+                </div>
+              ) : groupedAllStoreProducts.length === 0 ? (
+                <div className="py-16 text-center border border-dashed border-[#E2E8F0] rounded-xl">
+                  <p className="text-[13px] font-medium text-[#475569]">
+                    No products found across stores
+                  </p>
+                </div>
+              ) : (
+                <div className="space-y-3">
+
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <p className="text-[12px] font-semibold text-[#0F172A]">
+                        {groupedAllStoreProducts.length} unique product names
+                      </p>
+
+                      <p className="text-[10px] text-[#94A3B8]">
+                        {allStores.length} stores checked
+                      </p>
+                    </div>
+                  </div>
+
+                  {groupedAllStoreProducts.map(
+                    (group) => (
+                      <div
+                        key={group.key}
+                        className="border border-[#E2E8F0] rounded-xl overflow-hidden"
+                      >
+
+                        <div className="bg-[#F8FAFC] px-4 py-3 flex flex-wrap items-center justify-between gap-3">
+                          <div>
+                            <p className="text-[13px] font-semibold text-[#0F172A]">
+                              {group.name}
+                            </p>
+
+                            <p className="text-[10px] text-[#64748B] mt-0.5 font-mono">
+                              SKU: {group.sku}
+                            </p>
+                          </div>
+
+                          <div className="flex items-center gap-4 text-right">
+                            <div>
+                              <p className="text-[9px] uppercase tracking-wide text-[#94A3B8]">
+                                Stores
+                              </p>
+                              <p className="text-[12px] font-semibold text-[#0F172A]">
+                                {group.stores.length}
+                              </p>
+                            </div>
+
+                            <div>
+                              <p className="text-[9px] uppercase tracking-wide text-[#94A3B8]">
+                                Total Stock
+                              </p>
+                              <p className="text-[12px] font-semibold text-[#0F172A]">
+                                {group.totalStock.toLocaleString()}
+                              </p>
+                            </div>
+
+                            <div>
+                              <p className="text-[9px] uppercase tracking-wide text-[#94A3B8]">
+                                Avg. Cost
+                              </p>
+                              <p className="text-[12px] font-semibold text-[#4F46E5]">
+                                {fmt(group.averageCost)}
+                              </p>
+                            </div>
+                          </div>
+                        </div>
+
+                        <div className="overflow-x-auto">
+                          <table className="w-full text-left">
+                            <thead>
+                              <tr className="border-t border-[#E2E8F0] border-b bg-white">
+                                <th className="px-4 py-2 text-[9px] font-semibold uppercase tracking-wide text-[#94A3B8]">
+                                  Store
+                                </th>
+                                <th className="px-4 py-2 text-[9px] font-semibold uppercase tracking-wide text-[#94A3B8]">
+                                  SKU
+                                </th>
+                                <th className="px-4 py-2 text-[9px] font-semibold uppercase tracking-wide text-[#94A3B8]">
+                                  Category
+                                </th>
+                                <th className="px-4 py-2 text-[9px] font-semibold uppercase tracking-wide text-[#94A3B8] text-right">
+                                  Stock
+                                </th>
+                                <th className="px-4 py-2 text-[9px] font-semibold uppercase tracking-wide text-[#94A3B8] text-right">
+                                  Cost (Average)
+                                </th>
+                                <th className="px-4 py-2 text-[9px] font-semibold uppercase tracking-wide text-[#94A3B8]">
+                                  Status
+                                </th>
+                              </tr>
+                            </thead>
+
+                            <tbody>
+                              {group.stores.map(
+                                (product) => {
+                                  const store =
+                                    allStores.find(
+                                      (item) =>
+                                        Number(item.id) ===
+                                        Number(product.store_id)
+                                    );
+
+                                  const displayCost =
+                                    Number(
+                                      averageCosts[
+                                        String(product.id)
+                                      ]
+                                    );
+
+                                  const cost =
+                                    Number.isFinite(
+                                      displayCost
+                                    )
+                                      ? displayCost
+                                      : Number(
+                                          product.cost || 0
+                                        );
+
+                                  return (
+                                    <tr
+                                      key={`${product.store_id}-${product.id}`}
+                                      className="border-b last:border-b-0 border-[#F1F5F9]"
+                                    >
+                                      <td className="px-4 py-3">
+                                        <div>
+                                          <p className="text-[12px] font-medium text-[#0F172A]">
+                                            {store?.store_name ||
+                                              `Store #${product.store_id}`}
+                                          </p>
+
+                                          {store?.branch_name && (
+                                            <p className="text-[10px] text-[#94A3B8]">
+                                              {store.branch_name}
+                                            </p>
+                                          )}
+                                        </div>
+                                      </td>
+
+                                      <td className="px-4 py-3 text-[11px] font-mono text-[#64748B]">
+                                        {product.sku || "—"}
+                                      </td>
+
+                                      <td className="px-4 py-3 text-[11px] text-[#64748B]">
+                                        {product.category_name ||
+                                          "—"}
+                                      </td>
+
+                                      <td className="px-4 py-3 text-[11px] font-semibold text-[#0F172A] text-right">
+                                        {Number(
+                                          product.stock || 0
+                                        ).toLocaleString()}
+                                      </td>
+
+                                      <td className="px-4 py-3 text-[11px] text-[#64748B] text-right">
+                                        {fmt(cost)}
+                                      </td>
+
+                                      <td className="px-4 py-3">
+                                        {product.status ===
+                                        "inactive" ? (
+                                          <Badge variant="danger">
+                                            Inactive
+                                          </Badge>
+                                        ) : (
+                                          <Badge variant="success">
+                                            Active
+                                          </Badge>
+                                        )}
+                                      </td>
+                                    </tr>
+                                  );
+                                }
+                              )}
+                            </tbody>
+                          </table>
+                        </div>
+
+                      </div>
+                    )
+                  )}
+
+                </div>
+              )}
+
+            </div>
+          </div>
         </div>
       )}
 
