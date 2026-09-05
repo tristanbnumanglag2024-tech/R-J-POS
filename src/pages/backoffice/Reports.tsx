@@ -42,7 +42,7 @@ interface ReportsProps {
 
 type ReportType =
   | "Sales Report"
-  | "Inventory Purchase Report"
+  | "Purchased Order Report"
   | "Product History"
   | "Employee Sales"
   | "Store Transfer Report";
@@ -220,27 +220,38 @@ function getStoreDisplayName(
   activeStoreId: number | null | undefined
 ) {
   if (data.scope === "all") return "All Stores";
-  return data.branch_name?.trim() || "Unknown Branch";
+  return data.branch_name?.trim() || `Store #${activeStoreId ?? "?"}`;
 }
+
+type ReportColumn = {
+  label: string;
+  align?: "left" | "center" | "right";
+};
 
 function ReportTable({
   columns,
   children,
 }: {
-  columns: string[];
+  columns: ReportColumn[];
   children: React.ReactNode;
 }) {
   return (
-    <div className="overflow-x-auto">
+    <div className="reports-table-wrap overflow-x-auto">
       <table className="w-full text-[11px]">
         <thead>
-          <tr className="border-b border-[#E2E8F0] text-left">
+          <tr className="border-b border-[#E2E8F0]">
             {columns.map((column) => (
               <th
-                key={column}
-                className="py-2"
+                key={column.label}
+                className={`py-2 ${
+                  column.align === "right"
+                    ? "text-right"
+                    : column.align === "center"
+                    ? "text-center"
+                    : "text-left"
+                }`}
               >
-                {column}
+                {column.label}
               </th>
             ))}
           </tr>
@@ -287,6 +298,93 @@ export default function Reports({
 
   const [reportScope, setReportScope] =
     useState<ReportScope>("current");
+
+  type ReportStore = {
+    id: number;
+    store_name: string;
+    branch_name: string;
+    status?: string;
+  };
+
+  const [reportStores, setReportStores] =
+    useState<ReportStore[]>([]);
+
+  const [reportStoreId, setReportStoreId] =
+    useState<number | null>(activeStoreId ?? null);
+
+  useEffect(() => {
+    setReportStoreId(activeStoreId ?? null);
+  }, [activeStoreId]);
+
+  useEffect(() => {
+    let mounted = true;
+
+    const loadReportStores = async () => {
+      try {
+        const response = await fetch(
+          `${API_BASE}/stores/list.php`,
+          {
+            method: "GET",
+            headers: {
+              Accept: "application/json",
+            },
+          }
+        );
+
+        const data = await response.json();
+
+        if (!response.ok || !data.success) {
+          throw new Error(
+            data.message || "Unable to load stores."
+          );
+        }
+
+        const rows: ReportStore[] =
+          Array.isArray(data.stores)
+            ? data.stores
+                .map((store: any) => ({
+                  id: Number(store.id),
+                  store_name: String(
+                    store.store_name ||
+                      `Store #${store.id}`
+                  ).trim(),
+                  branch_name: String(
+                    store.branch_name ||
+                      store.store_name ||
+                      `Store #${store.id}`
+                  ).trim(),
+                  status: String(
+                    store.status || "active"
+                  ),
+                }))
+                .filter(
+                  (store: ReportStore) =>
+                    Number.isInteger(store.id) &&
+                    store.id > 0
+                )
+            : [];
+
+        if (mounted) {
+          setReportStores(rows);
+        }
+      } catch (err) {
+        console.error(
+          "Report store list error:",
+          err
+        );
+
+        if (mounted) {
+          setReportStores([]);
+        }
+      }
+    };
+
+    loadReportStores();
+
+    return () => {
+      mounted = false;
+    };
+  }, []);
 
   /*
   |--------------------------------------------------------------------------
@@ -719,7 +817,7 @@ export default function Reports({
   const generateReport = async (
     type: ReportType
   ) => {
-    if (!activeStoreId) {
+    if (!reportStoreId) {
       setError("Please select a store first.");
       return;
     }
@@ -740,7 +838,7 @@ export default function Reports({
 
     const reportTypeMap: Record<ReportType, string> = {
       "Sales Report": "sales",
-      "Inventory Purchase Report": "purchases",
+      "Purchased Order Report": "purchases",
       "Product History": "product_history",
       "Employee Sales": "employee_sales",
       "Store Transfer Report": "transfers",
@@ -813,7 +911,7 @@ export default function Reports({
         start_date: apiStartDate,
         end_date: apiEndDate,
         scope: reportScope,
-        store_id: String(activeStoreId),
+        store_id: String(reportStoreId),
         frequency: reportFrequency,
       });
 
@@ -855,6 +953,8 @@ export default function Reports({
           reportTypeMap[type],
         scope:
           data.scope || reportScope,
+        branch_name:
+          data.branch_name || null,
         start_date:
           data.start_date ||
           apiStartDate,
@@ -1020,7 +1120,7 @@ export default function Reports({
     },
     {
       icon: "📦",
-      name: "Inventory Purchase Report",
+      name: "Purchased Order Report",
       desc:
         "Purchased items, supplier costs and balances",
     },
@@ -1093,11 +1193,11 @@ export default function Reports({
           .reports-screen .reports-print-area {
             display: block !important;
             position: relative !important;
-            left: 0 !important;
+            left: auto !important;
             top: 0 !important;
-            width: 100% !important;
-            max-width: none !important;
-            margin: 0 !important;
+            width: 190mm !important;
+            max-width: 190mm !important;
+            margin: 0 auto !important;
             padding: 0 !important;
             border: 0 !important;
             box-shadow: none !important;
@@ -1107,6 +1207,11 @@ export default function Reports({
           .reports-print-area,
           .reports-print-area * {
             color: #111827 !important;
+            box-sizing: border-box !important;
+          }
+
+          .reports-print-area {
+            overflow: visible !important;
           }
 
           .reports-print-header {
@@ -1121,6 +1226,16 @@ export default function Reports({
 
           .reports-print-table thead {
             display: table-header-group !important;
+          }
+
+          .reports-print-table th,
+          .reports-print-table td {
+            vertical-align: top !important;
+          }
+
+          .reports-print-table th {
+            font-weight: 700 !important;
+            white-space: nowrap !important;
           }
 
           .reports-print-table tr {
@@ -1709,17 +1824,80 @@ export default function Reports({
               Store Scope
             </label>
             <select
-              value={reportScope}
-              onChange={(e) =>
-                setReportScope(
-                  e.target.value as ReportScope
-                )
+              value={
+                reportScope === "all"
+                  ? "all"
+                  : reportStoreId === Number(activeStoreId)
+                  ? "current"
+                  : reportStoreId
+                  ? String(reportStoreId)
+                  : "current"
               }
+              onChange={(e) => {
+                const value = e.target.value;
+
+                if (value === "all") {
+                  setReportScope("all");
+                  setReportStoreId(
+                    activeStoreId ?? null
+                  );
+                  return;
+                }
+
+                if (value === "current") {
+                  setReportScope("current");
+                  setReportStoreId(
+                    activeStoreId ?? null
+                  );
+                  return;
+                }
+
+                const selectedId = Number(value);
+
+                if (
+                  Number.isInteger(selectedId) &&
+                  selectedId > 0
+                ) {
+                  setReportScope("current");
+                  setReportStoreId(selectedId);
+                }
+              }}
               className="w-full h-9 px-3 text-[12px] rounded-lg border border-[#E2E8F0] bg-white"
             >
               <option value="current">
                 Current Store
+                {reportStores.find(
+                  (store) =>
+                    store.id === Number(activeStoreId)
+                )?.branch_name
+                  ? ` — ${
+                      reportStores.find(
+                        (store) =>
+                          store.id === Number(
+                            activeStoreId
+                          )
+                      )?.branch_name
+                    }`
+                  : ""}
               </option>
+
+              {reportStores
+                .filter(
+                  (store) =>
+                    store.id !== Number(
+                      activeStoreId
+                    ) &&
+                    store.status !== "inactive"
+                )
+                .map((store) => (
+                  <option
+                    key={store.id}
+                    value={String(store.id)}
+                  >
+                    {store.branch_name}
+                  </option>
+                ))}
+
               <option value="all">
                 All Stores
               </option>
@@ -1736,7 +1914,7 @@ export default function Reports({
                 generateReport(report.name)
               }
               disabled={
-                !activeStoreId ||
+                !reportStoreId ||
                 generating !== null
               }
               className="text-left p-4 rounded-xl border border-[#E2E8F0] hover:border-[#4F46E5] hover:bg-[#EEF2FF]/30 disabled:opacity-50 disabled:cursor-not-allowed transition-all"
@@ -1764,7 +1942,7 @@ export default function Reports({
       </Card>
 
       {generatedReport && generatedData && (
-        <Card className="reports-print-area p-6 print:shadow-none reports-print-table">
+        <Card className="reports-print-area p-6 print:shadow-none reports-print-table mx-auto">
           <div className="reports-print-header border-b-2 border-[#111827] pb-3 mb-4">
             <div className="flex items-start justify-between">
               <div>
@@ -1785,7 +1963,7 @@ export default function Reports({
                   <span className="font-semibold">
                     {getStoreDisplayName(
                       generatedData,
-                      activeStoreId
+                      reportStoreId
                     )}
                   </span>
                 </p>
@@ -1830,7 +2008,7 @@ export default function Reports({
                 {" · "}
                 {getStoreDisplayName(
                   generatedData,
-                  activeStoreId
+                  reportStoreId
                 )}
                 {generatedReport === "Sales Report"
                   ? ` · ${generatedData.frequency}`
@@ -1885,12 +2063,12 @@ export default function Reports({
 
               <ReportTable
                 columns={[
-                  "Store",
-                  "Product",
-                  "SKU",
-                  "Qty",
-                  "Avg. Unit Price",
-                  "Total Sales",
+                  { label: "Store" },
+                  { label: "Product" },
+                  { label: "SKU" },
+                  { label: "Qty", align: "right" },
+                  { label: "Avg. Unit Price", align: "right" },
+                  { label: "Total Sales", align: "right" },
                 ]}
               >
                 {generatedData.products?.map((row) => (
@@ -1899,7 +2077,7 @@ export default function Reports({
                     className="border-b border-[#F1F5F9]"
                   >
                     <td className="py-2">
-                      {row.branch_name || "Unknown Branch"}
+                      {row.branch_name || `Store #${row.store_id}`}
                     </td>
                     <td className="py-2">
                       {row.product_name}
@@ -1935,7 +2113,7 @@ export default function Reports({
             </>
           )}
 
-          {generatedReport === "Inventory Purchase Report" && (
+          {generatedReport === "Purchased Order Report" && (
             <>
               <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-6">
                 <InfoBox
@@ -1972,14 +2150,14 @@ export default function Reports({
 
               <ReportTable
                 columns={[
-                  "Store",
-                  "Product",
-                  "Supplier",
-                  "PO",
-                  "Qty",
-                  "Unit Cost",
-                  "Total",
-                  "PO Balance",
+                  { label: "Store" },
+                  { label: "Product" },
+                  { label: "Supplier" },
+                  { label: "PO" },
+                  { label: "Qty", align: "right" },
+                  { label: "Unit Cost", align: "right" },
+                  { label: "Total", align: "right" },
+                  { label: "PO Balance", align: "right" },
                 ]}
               >
                 {generatedData.purchases?.map(
@@ -1989,7 +2167,7 @@ export default function Reports({
                       className="border-b border-[#F1F5F9]"
                     >
                       <td className="py-2">
-                        {row.branch_name || "Unknown Branch"}
+                        {row.branch_name || `Store #${row.store_id}`}
                       </td>
                       <td className="py-2">
                         {row.product_name}
@@ -2059,13 +2237,13 @@ export default function Reports({
 
               <ReportTable
                 columns={[
-                  "Date",
-                  "Store",
-                  "Product",
-                  "Movement",
-                  "Qty",
-                  "Stock",
-                  "Reference",
+                  { label: "Date" },
+                  { label: "Store" },
+                  { label: "Product" },
+                  { label: "Movement" },
+                  { label: "Qty", align: "right" },
+                  { label: "Stock", align: "right" },
+                  { label: "Reference" },
                 ]}
               >
                 {generatedData.history?.map((row) => (
@@ -2077,7 +2255,7 @@ export default function Reports({
                       {dateTimeLabel(row.created_at)}
                     </td>
                     <td className="py-2">
-                      {row.branch_name || "Unknown Branch"}
+                      {row.branch_name}
                     </td>
                     <td className="py-2">
                       {row.product_name}
@@ -2135,11 +2313,11 @@ export default function Reports({
 
               <ReportTable
                 columns={[
-                  "Store",
-                  "Employee",
-                  "Transactions",
-                  "Sales",
-                  "Paid",
+                  { label: "Store" },
+                  { label: "Employee" },
+                  { label: "Transactions", align: "right" },
+                  { label: "Sales", align: "right" },
+                  { label: "Paid", align: "right" },
                 ]}
               >
                 {generatedData.employees?.map((row) => (
@@ -2148,7 +2326,7 @@ export default function Reports({
                     className="border-b border-[#F1F5F9]"
                   >
                     <td className="py-2">
-                      {row.branch_name || "Unknown Branch"}
+                      {row.branch_name || `Store #${row.store_id}`}
                     </td>
                     <td className="py-2 font-medium">
                       {row.employee_name}
@@ -2197,13 +2375,15 @@ export default function Reports({
 
               <ReportTable
                 columns={[
-                  "Transfer",
-                  "From",
-                  "To",
-                  "Product",
-                  "Qty",
-                  "Received",
-                  "Status",
+                  { label: "Transfer Date" },
+                  { label: "Received Date" },
+                  { label: "Transfer" },
+                  { label: "From" },
+                  { label: "To" },
+                  { label: "Product" },
+                  { label: "Qty", align: "right" },
+                  { label: "Received", align: "right" },
+                  { label: "Status" },
                 ]}
               >
                 {generatedData.transfers?.map((row) => (
@@ -2211,6 +2391,14 @@ export default function Reports({
                     key={row.item_id}
                     className="border-b border-[#F1F5F9]"
                   >
+                    <td className="py-2">
+                      {dateTimeLabel(row.created_at)}
+                    </td>
+                    <td className="py-2">
+                      {row.received_at
+                        ? dateTimeLabel(row.received_at)
+                        : "—"}
+                    </td>
                     <td className="py-2 font-mono">
                       {row.transfer_no}
                     </td>

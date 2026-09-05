@@ -85,33 +85,6 @@ function fmt(value: number | string | null | undefined) {
   });
 }
 
-function stockBadge(
-  stock: number,
-  lowStockThreshold: number
-) {
-  if (stock <= 0) {
-    return (
-      <Badge variant="danger">
-        Out of Stock
-      </Badge>
-    );
-  }
-
-  if (stock <= lowStockThreshold) {
-    return (
-      <Badge variant="warning">
-        Low Stock
-      </Badge>
-    );
-  }
-
-  return (
-    <Badge variant="success">
-      In Stock
-    </Badge>
-  );
-}
-
 function getInitials(name: string) {
   if (!name) return "PR";
 
@@ -187,9 +160,6 @@ export default function Products({
   |--------------------------------------------------------------------------
   */
 
-  const [showAllStores, setShowAllStores] =
-    useState(false);
-
   const [allStoreProducts, setAllStoreProducts] =
     useState<Product[]>([]);
 
@@ -205,12 +175,6 @@ export default function Products({
 
   const [loadingAllStores, setLoadingAllStores] =
     useState(false);
-
-  const [allStoresError, setAllStoresError] =
-    useState("");
-
-  const [allStoresSearch, setAllStoresSearch] =
-    useState("");
 
   const [showExportModal, setShowExportModal] =
     useState(false);
@@ -247,6 +211,10 @@ export default function Products({
   const [catFilter, setCatFilter] = useState("");
   const [statusFilter, setStatusFilter] = useState("");
 
+  // Main table scope: current store or every store.
+  const [tableScope, setTableScope] =
+    useState<"current" | "all">("current");
+
   const [page, setPage] = useState(1);
 
   /*
@@ -257,6 +225,9 @@ export default function Products({
 
   const [menuId, setMenuId] =
     useState<number | null>(null);
+
+  const [globalStatusUpdating, setGlobalStatusUpdating] =
+    useState<string | null>(null);
 
   /*
   |--------------------------------------------------------------------------
@@ -459,16 +430,13 @@ export default function Products({
   | Display-only view.
   | No database rows are created or modified.
   |
-  | Products with the same normalized name are grouped together in the
-  | modal and shown with their existing store records.
+  | Loads the existing product records from every store for the main table
+  | All Stores scope. No product rows are created or merged here.
   */
 
   const openAllStores = async (): Promise<{ stores: Store[]; products: Product[] }> => {
     try {
-      setShowAllStores(true);
       setLoadingAllStores(true);
-      setAllStoresError("");
-      setAllStoresSearch("");
 
       const storesResponse = await fetch(
         `${API_BASE}/stores/list.php`,
@@ -611,7 +579,7 @@ export default function Products({
 
       setAllStoreProducts([]);
 
-      setAllStoresError(
+      setError(
         err instanceof Error
           ? err.message
           : "Unable to load products across stores."
@@ -1125,17 +1093,6 @@ export default function Products({
     setImportResult(null);
   };
 
-  const closeAllStores = () => {
-    if (loadingAllStores) {
-      return;
-    }
-
-    setShowAllStores(false);
-    setAllStoreProducts([]);
-    setAllStoreAverageCosts({});
-    setAllStoresError("");
-    setAllStoresSearch("");
-  };
 
   /*
   |--------------------------------------------------------------------------
@@ -1157,15 +1114,36 @@ export default function Products({
     if (!activeStoreId) {
       setProducts([]);
       setAverageCosts({});
+      setAllStoreProducts([]);
+      setAllStores([]);
       setAllStoreAverageCosts({});
       setCategories([]);
       return;
     }
 
+    setAllStoreProducts([]);
+    setAllStores([]);
+    setAllStoreAverageCosts({});
+
     fetchProducts(activeStoreId);
     fetchAverageCosts(activeStoreId);
     fetchCategories(activeStoreId);
   }, [activeStoreId]);
+
+  // Load every store only when the main table is switched to All Stores.
+  // Current Store keeps using the lightweight single-store API calls above.
+  useEffect(() => {
+    if (!activeStoreId) return;
+
+    setPage(1);
+    setMenuId(null);
+    setError("");
+    setSuccess("");
+
+    if (tableScope === "all") {
+      openAllStores();
+    }
+  }, [activeStoreId, tableScope]);
 
   /*
   |--------------------------------------------------------------------------
@@ -1173,11 +1151,33 @@ export default function Products({
   |--------------------------------------------------------------------------
   */
 
+  const tableProducts =
+    tableScope === "all"
+      ? allStoreProducts
+      : products;
+
+  const getDisplayAverageCost = (product: Product) => {
+    if (tableScope === "all") {
+      const storeCosts =
+        allStoreAverageCosts[Number(product.store_id)] || {};
+
+      const value = storeCosts[String(product.id)];
+      return value !== undefined
+        ? Number(value)
+        : Number(product.cost || 0);
+    }
+
+    const value = averageCosts[String(product.id)];
+    return value !== undefined
+      ? Number(value)
+      : Number(product.cost || 0);
+  };
+
   const filtered = useMemo(() => {
     const searchValue =
       search.trim().toLowerCase();
 
-    return products.filter((product) => {
+    return tableProducts.filter((product) => {
       const matchSearch =
         !searchValue ||
         product.name
@@ -1206,149 +1206,11 @@ export default function Products({
       );
     });
   }, [
-    products,
+    tableProducts,
     search,
     catFilter,
     statusFilter,
   ]);
-
-  /*
-  |--------------------------------------------------------------------------
-  | GROUP ALL-STORE PRODUCTS BY SAME NAME
-  |--------------------------------------------------------------------------
-  | Existing product rows are grouped only for display.
-  | Nothing is inserted or merged in the database.
-  */
-
-  const groupedAllStoreProducts =
-    useMemo(() => {
-      const groups = new Map<
-        string,
-        Product[]
-      >();
-
-      allStoreProducts.forEach((product) => {
-        const key = product.name
-          .trim()
-          .toLowerCase();
-
-        if (!key) {
-          return;
-        }
-
-        const existing =
-          groups.get(key) || [];
-
-        existing.push(product);
-        groups.set(key, existing);
-      });
-
-      const allGroups = Array.from(
-        groups.entries()
-      )
-        .map(([key, storeProducts]) => {
-          const sorted =
-            [...storeProducts].sort(
-              (a, b) =>
-                Number(a.store_id) -
-                Number(b.store_id)
-            );
-
-          const totalStock =
-            sorted.reduce(
-              (sum, product) =>
-                sum +
-                Number(product.stock || 0),
-              0
-            );
-
-          const weightedStockCost =
-            sorted.reduce(
-              (sum, product) =>
-                sum +
-                Number(product.stock || 0) *
-                  Number(
-                    allStoreAverageCosts[
-                      Number(product.store_id)
-                    ]?.[String(product.id)] ??
-                      product.cost ??
-                      0
-                  ),
-              0
-            );
-
-          const averageCost =
-            totalStock > 0
-              ? weightedStockCost /
-                totalStock
-              : sorted.length > 0
-              ? sorted.reduce(
-                  (sum, product) =>
-                    sum +
-                    Number(
-                      allStoreAverageCosts[
-                        Number(product.store_id)
-                      ]?.[String(product.id)] ??
-                        product.cost ??
-                        0
-                    ),
-                  0
-                ) / sorted.length
-              : 0;
-
-          return {
-            key,
-            name:
-              sorted[0]?.name ||
-              "Unnamed Product",
-            sku:
-              sorted[0]?.sku ||
-              "—",
-            totalStock,
-            averageCost,
-            stores: sorted,
-          };
-        })
-        .sort((a, b) =>
-          a.name.localeCompare(b.name)
-        );
-
-      const searchValue =
-        allStoresSearch
-          .trim()
-          .toLowerCase();
-
-      if (!searchValue) {
-        return allGroups;
-      }
-
-      return allGroups.filter((group) => {
-        const matchesGroup =
-          group.name
-            .toLowerCase()
-            .includes(searchValue) ||
-          group.sku
-            .toLowerCase()
-            .includes(searchValue);
-
-        if (matchesGroup) {
-          return true;
-        }
-
-        return group.stores.some((product) =>
-          String(product.sku ?? "")
-            .toLowerCase()
-            .includes(searchValue) ||
-          String(product.barcode ?? "")
-            .toLowerCase()
-            .includes(searchValue)
-        );
-      });
-    }, [
-      allStoreProducts,
-      allStoreAverageCosts,
-      allStoresSearch,
-    ]);
 
   /*
   |--------------------------------------------------------------------------
@@ -1387,6 +1249,10 @@ export default function Products({
       fetchProducts(activeStoreId),
       fetchAverageCosts(activeStoreId),
     ]);
+
+    if (tableScope === "all") {
+      await openAllStores();
+    }
   };
 
   /*
@@ -1550,6 +1416,106 @@ export default function Products({
     );
   }
 };
+
+  /*
+  |--------------------------------------------------------------------------
+  | ENABLE / DISABLE ACROSS ALL STORES
+  |--------------------------------------------------------------------------
+  | All-store products are grouped by normalized product name. The backend
+  | updates every matching product row in the products table to the same
+  | status, so the database stays synchronized across stores.
+  */
+
+  const handleToggleStatusAllStores = async (
+    product: Product
+  ) => {
+    setMenuId(null);
+
+    const nameKey = product.name.trim().toLowerCase();
+    if (!nameKey) {
+      setError("This product has no valid name.");
+      return;
+    }
+
+    const newStatus =
+      product.status === "active"
+        ? "inactive"
+        : "active";
+
+    const actionText =
+      newStatus === "inactive"
+        ? "disable"
+        : "enable";
+
+    const confirmed = window.confirm(
+      `${newStatus === "inactive" ? "Disable" : "Enable"} \"${product.name}\" across all stores?\n\nAll matching product records will be set to ${newStatus} in the database.`
+    );
+
+    if (!confirmed) return;
+
+    try {
+      setGlobalStatusUpdating(nameKey);
+      setError("");
+      setSuccess("");
+
+      const response = await fetch(
+        `${API_BASE}/products/toggle_all_status.php`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Accept: "application/json",
+          },
+          body: JSON.stringify({
+            product_id: Number(product.id),
+            status: newStatus,
+          }),
+        }
+      );
+
+      const text = await response.text();
+      let data: any;
+
+      try {
+        data = JSON.parse(text);
+      } catch {
+        throw new Error(
+          `Global status API did not return valid JSON:\n${text.substring(0, 500)}`
+        );
+      }
+
+      if (!response.ok || !data.success) {
+        throw new Error(
+          data.message ||
+            `Failed to ${actionText} the product across all stores.`
+        );
+      }
+
+      setSuccess(
+        data.message ||
+          `Product ${actionText}d across all stores successfully.`
+      );
+
+      if (tableScope === "all") {
+        await openAllStores();
+      } else if (activeStoreId) {
+        await refreshProducts();
+      }
+    } catch (err) {
+      console.error(
+        "Global product status error:",
+        err
+      );
+
+      setError(
+        err instanceof Error
+          ? err.message
+          : `Failed to ${actionText} the product across all stores.`
+      );
+    } finally {
+      setGlobalStatusUpdating(null);
+    }
+  };
   /*
   |--------------------------------------------------------------------------
   | DUPLICATE
@@ -2000,7 +1966,9 @@ export default function Products({
           </h2>
 
           <p className="text-[12px] text-[#64748B] mt-0.5">
-            {products.length} products in this store
+            {tableScope === "all"
+              ? `${allStoreProducts.length} product records across ${allStores.length} stores`
+              : `${products.length} products in this store`}
           </p>
         </div>
 
@@ -2040,17 +2008,6 @@ export default function Products({
             disabled={importLoading}
           >
             Import
-          </Button>
-
-          <Button
-            variant="secondary"
-            size="sm"
-            onClick={openAllStores}
-            disabled={loadingAllStores}
-          >
-            {loadingAllStores
-              ? "Loading Stores..."
-              : "View All Stores"}
           </Button>
 
           <Button
@@ -2118,6 +2075,29 @@ export default function Products({
           />
 
           <Select
+            value={tableScope}
+            onChange={(value) => {
+              setTableScope(
+                value as "current" | "all"
+              );
+              setPage(1);
+              setCatFilter("");
+              setStatusFilter("");
+            }}
+         
+            options={[
+              {
+                value: "current",
+                label: "Current Store",
+              },
+              {
+                value: "all",
+                label: "All Stores",
+              },
+            ]}
+          />
+
+          <Select
             value={catFilter}
             onChange={(value) => {
               setCatFilter(value);
@@ -2178,10 +2158,12 @@ export default function Products({
 
       <Card>
 
-        {loading ? (
+        {loading || (tableScope === "all" && loadingAllStores) ? (
           <div className="p-10 text-center">
             <p className="text-[13px] text-[#64748B]">
-              Loading products...
+              {tableScope === "all"
+                ? "Loading products from all stores..."
+                : "Loading products..."}
             </p>
           </div>
         ) : paged.length === 0 ? (
@@ -2216,6 +2198,7 @@ export default function Products({
           <>
             <Table
               headers={[
+                ...(tableScope === "all" ? ["Store"] : []),
                 "Product",
                 "SKU",
                 "Barcode",
@@ -2230,7 +2213,28 @@ export default function Products({
 
               {paged.map((product) => (
 
-                <Tr key={product.id}>
+                <Tr key={`${product.store_id}-${product.id}`}>
+
+                  {tableScope === "all" && (
+                    <Td>
+                      <div>
+                        <p className="text-[12px] font-medium text-[#0F172A]">
+                          {allStores.find(
+                            (store) => Number(store.id) === Number(product.store_id)
+                          )?.store_name || `Store #${product.store_id}`}
+                        </p>
+                        {allStores.find(
+                          (store) => Number(store.id) === Number(product.store_id)
+                        )?.branch_name && (
+                          <p className="text-[10px] text-[#94A3B8]">
+                            {allStores.find(
+                              (store) => Number(store.id) === Number(product.store_id)
+                            )?.branch_name}
+                          </p>
+                        )}
+                      </div>
+                    </Td>
+                  )}
 
                   {/* PRODUCT */}
 
@@ -2304,12 +2308,7 @@ export default function Products({
 
                   <Td>
                     <span className="text-[#64748B]">
-                      {fmt(
-                        averageCosts[String(product.id)] !==
-                          undefined
-                          ? averageCosts[String(product.id)]
-                          : product.cost
-                      )}
+                      {fmt(getDisplayAverageCost(product))}
                     </span>
                   </Td>
 
@@ -2341,13 +2340,14 @@ export default function Products({
                   {/* STATUS */}
 
                   <Td>
-                    {stockBadge(
-                      Number(
-                        product.stock
-                      ),
-                      Number(
-                        product.low_stock_threshold
-                      )
+                    {product.status === "inactive" ? (
+                      <Badge variant="danger">
+                        Inactive
+                      </Badge>
+                    ) : (
+                      <Badge variant="success">
+                        Active
+                      </Badge>
                     )}
                   </Td>
 
@@ -2402,72 +2402,66 @@ export default function Products({
                           <button
                             type="button"
                             onClick={() => {
-                              setMenuId(
-                                null
-                              );
-                              setViewProduct(
-                                product
-                              );
+                              setMenuId(null);
+                              setViewProduct(product);
                             }}
                             className="w-full flex items-center gap-2.5 px-3 py-2 text-[13px] text-[#374151] hover:bg-[#F8FAFC]"
                           >
                             View
                           </button>
 
-                          <button
-                            type="button"
-                            onClick={() =>
-                              openEdit(
-                                product
-                              )
-                            }
-                            className="w-full flex items-center gap-2.5 px-3 py-2 text-[13px] text-[#374151] hover:bg-[#F8FAFC]"
-                          >
-                            Edit
-                          </button>
-
-                          <button
-                            type="button"
-                            onClick={() =>
-                              handleDuplicate(
-                                product
-                              )
-                            }
-                            className="w-full flex items-center gap-2.5 px-3 py-2 text-[13px] text-[#374151] hover:bg-[#F8FAFC]"
-                          >
-                            Duplicate
-                          </button>
-
-                          <button
-                            type="button"
-                            onClick={() =>
-                              handleToggleStatus(
-                                product
-                              )
-                            }
-                            className="w-full flex items-center gap-2.5 px-3 py-2 text-[13px] text-[#374151] hover:bg-[#F8FAFC]"
-                          >
-                            {product.status ===
-                            "active"
-                              ? "Disable"
-                              : "Enable"}
-                          </button>
-
-                          <div className="border-t border-[#F1F5F9] mt-1 pt-1">
-
+                          {tableScope === "all" ? (
                             <button
                               type="button"
+                              disabled={globalStatusUpdating === product.name.trim().toLowerCase()}
                               onClick={() =>
-                                handleDelete(
-                                  product
-                                )
+                                handleToggleStatusAllStores(product)
                               }
-                              className="w-full flex items-center gap-2.5 px-3 py-2 text-[13px] text-red-500 hover:bg-red-50"
+                              className="w-full flex items-center gap-2.5 px-3 py-2 text-[13px] text-[#374151] hover:bg-[#F8FAFC] disabled:opacity-50"
                             >
-                              Delete
+                              {globalStatusUpdating === product.name.trim().toLowerCase()
+                                ? "Updating..."
+                                : product.status === "active"
+                                ? "Disable All Stores"
+                                : "Enable All Stores"}
                             </button>
+                          ) : (
+                            <>
+                              <button
+                                type="button"
+                                onClick={() => openEdit(product)}
+                                className="w-full flex items-center gap-2.5 px-3 py-2 text-[13px] text-[#374151] hover:bg-[#F8FAFC]"
+                              >
+                                Edit
+                              </button>
 
-                          </div>
+                              <button
+                                type="button"
+                                onClick={() => handleDuplicate(product)}
+                                className="w-full flex items-center gap-2.5 px-3 py-2 text-[13px] text-[#374151] hover:bg-[#F8FAFC]"
+                              >
+                                Duplicate
+                              </button>
+
+                              <button
+                                type="button"
+                                onClick={() => handleToggleStatus(product)}
+                                className="w-full flex items-center gap-2.5 px-3 py-2 text-[13px] text-[#374151] hover:bg-[#F8FAFC]"
+                              >
+                                {product.status === "active" ? "Disable" : "Enable"}
+                              </button>
+
+                              <div className="border-t border-[#F1F5F9] mt-1 pt-1">
+                                <button
+                                  type="button"
+                                  onClick={() => handleDelete(product)}
+                                  className="w-full flex items-center gap-2.5 px-3 py-2 text-[13px] text-red-500 hover:bg-red-50"
+                                >
+                                  Delete
+                                </button>
+                              </div>
+                            </>
+                          )}
 
                         </div>
 
@@ -2587,10 +2581,7 @@ export default function Products({
                 <Info
                   label="Cost (Average)"
                   value={fmt(
-                    averageCosts[String(viewProduct.id)] !==
-                      undefined
-                      ? averageCosts[String(viewProduct.id)]
-                      : viewProduct.cost
+                    getDisplayAverageCost(viewProduct)
                   )}
                 />
 
@@ -2883,249 +2874,6 @@ export default function Products({
               >
                 Cancel
               </Button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* ALL STORES MODAL */}
-
-      {showAllStores && (
-        <div className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-4">
-          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-[1000px] max-h-[90vh] overflow-hidden">
-
-            <div className="flex items-center justify-between px-5 py-4 border-b border-[#E2E8F0]">
-              <div>
-                <h3 className="text-[15px] font-bold text-[#0F172A]">
-                  Products Across All Stores
-                </h3>
-
-                <p className="text-[11px] text-[#64748B] mt-0.5">
-                  Existing product records grouped by the same product name. No new data is created.
-                </p>
-              </div>
-
-              <button
-                type="button"
-                onClick={closeAllStores}
-                disabled={loadingAllStores}
-                className="w-8 h-8 rounded-lg hover:bg-slate-100 text-slate-500 disabled:opacity-50"
-              >
-                ×
-              </button>
-            </div>
-
-            <div className="p-5 overflow-y-auto max-h-[calc(90vh-76px)]">
-
-              <div className="mb-4">
-                <SearchBar
-                  value={allStoresSearch}
-                  onChange={setAllStoresSearch}
-                  placeholder="Search product name, SKU or barcode..."
-                />
-              </div>
-
-              {allStoresError && (
-                <div className="mb-4 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-[12px] text-red-700">
-                  {allStoresError}
-                </div>
-              )}
-
-              {loadingAllStores ? (
-                <div className="py-16 text-center">
-                  <div className="w-7 h-7 mx-auto border-2 border-[#E2E8F0] border-t-[#4F46E5] rounded-full animate-spin" />
-                  <p className="text-[12px] text-[#64748B] mt-3">
-                    Loading products from all stores...
-                  </p>
-                </div>
-              ) : groupedAllStoreProducts.length === 0 ? (
-                <div className="py-16 text-center border border-dashed border-[#E2E8F0] rounded-xl">
-                  <p className="text-[13px] font-medium text-[#475569]">
-                    No products found across stores
-                  </p>
-                </div>
-              ) : (
-                <div className="space-y-3">
-
-                  <div className="flex items-center justify-between">
-                    <div>
-                      <p className="text-[12px] font-semibold text-[#0F172A]">
-                        {groupedAllStoreProducts.length} unique product names
-                      </p>
-
-                      <p className="text-[10px] text-[#94A3B8]">
-                        {allStores.length} stores checked
-                      </p>
-                    </div>
-                  </div>
-
-                  {groupedAllStoreProducts.map(
-                    (group) => (
-                      <div
-                        key={group.key}
-                        className="border border-[#E2E8F0] rounded-xl overflow-hidden"
-                      >
-
-                        <div className="bg-[#F8FAFC] px-4 py-3 flex flex-wrap items-center justify-between gap-3">
-                          <div>
-                            <p className="text-[13px] font-semibold text-[#0F172A]">
-                              {group.name}
-                            </p>
-
-                            <p className="text-[10px] text-[#64748B] mt-0.5 font-mono">
-                              SKU: {group.sku}
-                            </p>
-                          </div>
-
-                          <div className="flex items-center gap-4 text-right">
-                            <div>
-                              <p className="text-[9px] uppercase tracking-wide text-[#94A3B8]">
-                                Stores
-                              </p>
-                              <p className="text-[12px] font-semibold text-[#0F172A]">
-                                {group.stores.length}
-                              </p>
-                            </div>
-
-                            <div>
-                              <p className="text-[9px] uppercase tracking-wide text-[#94A3B8]">
-                                Total Stock
-                              </p>
-                              <p className="text-[12px] font-semibold text-[#0F172A]">
-                                {group.totalStock.toLocaleString()}
-                              </p>
-                            </div>
-
-                            <div>
-                              <p className="text-[9px] uppercase tracking-wide text-[#94A3B8]">
-                                Avg. Cost
-                              </p>
-                              <p className="text-[12px] font-semibold text-[#4F46E5]">
-                                {fmt(group.averageCost)}
-                              </p>
-                            </div>
-                          </div>
-                        </div>
-
-                        <div className="overflow-x-auto">
-                          <table className="w-full text-left">
-                            <thead>
-                              <tr className="border-t border-[#E2E8F0] border-b bg-white">
-                                <th className="px-4 py-2 text-[9px] font-semibold uppercase tracking-wide text-[#94A3B8]">
-                                  Store
-                                </th>
-                                <th className="px-4 py-2 text-[9px] font-semibold uppercase tracking-wide text-[#94A3B8]">
-                                  SKU
-                                </th>
-                                <th className="px-4 py-2 text-[9px] font-semibold uppercase tracking-wide text-[#94A3B8]">
-                                  Category
-                                </th>
-                                <th className="px-4 py-2 text-[9px] font-semibold uppercase tracking-wide text-[#94A3B8] text-right">
-                                  Stock
-                                </th>
-                                <th className="px-4 py-2 text-[9px] font-semibold uppercase tracking-wide text-[#94A3B8] text-right">
-                                  Cost (Average)
-                                </th>
-                                <th className="px-4 py-2 text-[9px] font-semibold uppercase tracking-wide text-[#94A3B8]">
-                                  Status
-                                </th>
-                              </tr>
-                            </thead>
-
-                            <tbody>
-                              {group.stores.map(
-                                (product) => {
-                                  const store =
-                                    allStores.find(
-                                      (item) =>
-                                        Number(item.id) ===
-                                        Number(product.store_id)
-                                    );
-
-                                  const displayCost =
-                                    Number(
-                                      allStoreAverageCosts[
-                                        Number(product.store_id)
-                                      ]?.[
-                                        String(product.id)
-                                      ]
-                                    );
-
-                                  const cost =
-                                    Number.isFinite(
-                                      displayCost
-                                    )
-                                      ? displayCost
-                                      : Number(
-                                          product.cost || 0
-                                        );
-
-                                  return (
-                                    <tr
-                                      key={`${product.store_id}-${product.id}`}
-                                      className="border-b last:border-b-0 border-[#F1F5F9]"
-                                    >
-                                      <td className="px-4 py-3">
-                                        <div>
-                                          <p className="text-[12px] font-medium text-[#0F172A]">
-                                            {store?.store_name ||
-                                              `Store #${product.store_id}`}
-                                          </p>
-
-                                          {store?.branch_name && (
-                                            <p className="text-[10px] text-[#94A3B8]">
-                                              {store.branch_name}
-                                            </p>
-                                          )}
-                                        </div>
-                                      </td>
-
-                                      <td className="px-4 py-3 text-[11px] font-mono text-[#64748B]">
-                                        {product.sku || "—"}
-                                      </td>
-
-                                      <td className="px-4 py-3 text-[11px] text-[#64748B]">
-                                        {product.category_name ||
-                                          "—"}
-                                      </td>
-
-                                      <td className="px-4 py-3 text-[11px] font-semibold text-[#0F172A] text-right">
-                                        {Number(
-                                          product.stock || 0
-                                        ).toLocaleString()}
-                                      </td>
-
-                                      <td className="px-4 py-3 text-[11px] text-[#64748B] text-right">
-                                        {fmt(cost)}
-                                      </td>
-
-                                      <td className="px-4 py-3">
-                                        {product.status ===
-                                        "inactive" ? (
-                                          <Badge variant="danger">
-                                            Inactive
-                                          </Badge>
-                                        ) : (
-                                          <Badge variant="success">
-                                            Active
-                                          </Badge>
-                                        )}
-                                      </td>
-                                    </tr>
-                                  );
-                                }
-                              )}
-                            </tbody>
-                          </table>
-                        </div>
-
-                      </div>
-                    )
-                  )}
-
-                </div>
-              )}
-
             </div>
           </div>
         </div>

@@ -1181,6 +1181,23 @@ ${text.substring(
     }, [form.items]);
 
   // ==========================================================
+  // PRODUCTS AVAILABLE FOR THE SELECTED SUPPLIER + STORE
+  // ==========================================================
+
+  const supplierProducts = useMemo(() => {
+    if (!activeStoreId || !form.supplier_id) {
+      return [];
+    }
+
+    return products.filter(
+      (product) =>
+        Number(product.store_id) === Number(activeStoreId) &&
+        Number(product.supplier_id ?? 0) === Number(form.supplier_id) &&
+        (!product.status || product.status === "active")
+    );
+  }, [products, activeStoreId, form.supplier_id]);
+
+  // ==========================================================
   // OPEN CREATE
   // ==========================================================
 
@@ -1234,6 +1251,30 @@ ${text.substring(
           ...previous.items,
         ];
 
+        // Prevent the same product from being selected on more than one line.
+        if (
+          field === "product_id" &&
+          value !== null
+        ) {
+          const duplicateIndex =
+            previous.items.findIndex(
+              (item, itemIndex) =>
+                itemIndex !== index &&
+                item.product_id !== null &&
+                Number(item.product_id) === Number(value)
+            );
+
+          if (duplicateIndex !== -1) {
+            setError(
+              "This product is already added to another item line."
+            );
+
+            return previous;
+          }
+
+          setError("");
+        }
+
         const current = {
           ...items[index],
           [field]: value,
@@ -1247,8 +1288,10 @@ ${text.substring(
           const product =
             products.find(
               (p) =>
-                p.id ===
-                Number(value)
+                Number(p.id) === Number(value) &&
+                Number(p.store_id) === Number(activeStoreId) &&
+                Number(p.supplier_id ?? 0) === Number(previous.supplier_id) &&
+                (!p.status || p.status === "active")
             );
 
           if (product) {
@@ -1256,6 +1299,9 @@ ${text.substring(
               getProductCost(
                 product
               );
+          } else {
+            current.product_id = null;
+            current.unit_cost = 0;
           }
         }
 
@@ -1301,6 +1347,13 @@ ${text.substring(
   // ==========================================================
 
   const addItem = () => {
+    if (!form.supplier_id) {
+      setError("Please select a supplier first before adding an item.");
+      return;
+    }
+
+    setError("");
+
     setForm(
       (previous) => ({
         ...previous,
@@ -1365,13 +1418,6 @@ ${text.substring(
     | supplier_id. We only use existing product rows; nothing is
     | created or written to the database by Auto Fill.
     */
-    const supplierProducts = products.filter(
-      (product) =>
-        Number(product.supplier_id ?? 0) ===
-        Number(form.supplier_id) &&
-        (!product.status || product.status === "active")
-    );
-
     const matchingProducts =
       mode === "low_stock"
         ? supplierProducts.filter(
@@ -4493,28 +4539,31 @@ ${text.substring(
                     form.supplier_id ??
                     ""
                   }
-                  onChange={(
-                    event
-                  ) =>
-                    setForm(
-                      (
-                        previous
-                      ) => ({
-                        ...previous,
+                  onChange={(event) => {
+                    const nextSupplierId = event.target.value
+                      ? Number(event.target.value)
+                      : null;
 
-                        supplier_id:
-                          event
-                            .target
-                            .value
-                            ? Number(
-                                event
-                                  .target
-                                  .value
-                              )
-                            : null,
-                      })
-                    )
-                  }
+                    setError("");
+                    setSuccess("");
+                    setShowAutofillMenu(false);
+
+                    setForm((previous) => {
+                      const supplierChanged =
+                        Number(previous.supplier_id ?? 0) !==
+                        Number(nextSupplierId ?? 0);
+
+                      return {
+                        ...previous,
+                        supplier_id: nextSupplierId,
+                        // Changing supplier clears the entire current order list
+                        // so products from the previous supplier cannot remain.
+                        items: supplierChanged
+                          ? [emptyPOItem()]
+                          : previous.items,
+                      };
+                    });
+                  }}
                   disabled={
                     loadingSuppliers
                   }
@@ -4658,10 +4707,9 @@ ${text.substring(
 
                   <button
                     type="button"
-                    onClick={
-                      addItem
-                    }
-                    className="text-[12px] text-[#4F46E5] font-semibold hover:text-[#4338CA]"
+                    disabled={!form.supplier_id}
+                    onClick={addItem}
+                    className="text-[12px] text-[#4F46E5] font-semibold hover:text-[#4338CA] disabled:opacity-40 disabled:cursor-not-allowed"
                   >
                     + Add Item
                   </button>
@@ -4736,39 +4784,61 @@ ${text.substring(
                               )
                             }
                             disabled={
-                              loadingProducts
+                              loadingProducts ||
+                              !form.supplier_id
                             }
                             className="w-full h-9 px-2 text-[12px] rounded-lg border border-[#E2E8F0] bg-white focus:outline-none focus:border-[#4F46E5]"
                           >
                             <option value="">
-                              {loadingProducts
+                              {!form.supplier_id
+                                ? "Select supplier first"
+                                : loadingProducts
                                 ? "Loading products..."
-                                : products.length ===
-                                  0
-                                ? "No products available"
+                                : supplierProducts.length === 0
+                                ? "No products for this supplier"
                                 : "Select product"}
                             </option>
 
-                            {products.map(
+                            {supplierProducts.map(
                               (
                                 product
-                              ) => (
-                                <option
-                                  key={
-                                    product.id
-                                  }
-                                  value={
-                                    product.id
-                                  }
-                                >
-                                  {
-                                    product.name
-                                  }
-                                  {product.sku
-                                    ? ` — ${product.sku}`
-                                    : ""}
-                                </option>
-                              )
+                              ) => {
+                                const alreadyUsed =
+                                  form.items.some(
+                                    (
+                                      existingItem,
+                                      existingIndex
+                                    ) =>
+                                      existingIndex !== index &&
+                                      existingItem.product_id !== null &&
+                                      Number(existingItem.product_id) ===
+                                        Number(product.id)
+                                  );
+
+                                return (
+                                  <option
+                                    key={
+                                      product.id
+                                    }
+                                    value={
+                                      product.id
+                                    }
+                                    disabled={
+                                      alreadyUsed
+                                    }
+                                  >
+                                    {
+                                      product.name
+                                    }
+                                    {product.sku
+                                      ? ` — ${product.sku}`
+                                      : ""}
+                                    {alreadyUsed
+                                      ? " — Already added"
+                                      : ""}
+                                  </option>
+                                );
+                              }
                             )}
                           </select>
 
