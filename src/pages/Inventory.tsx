@@ -34,6 +34,13 @@ type InventoryItem = {
     | "low_stock"
     | "out_of_stock";
   updated: string;
+
+  // Used by the all-store view. These fields are display-only.
+  store_id?: number;
+  store_name?: string;
+  branch_name?: string;
+  store_ids?: number[];
+  store_names?: string[];
 };
 
 type InventorySummary = {
@@ -68,6 +75,15 @@ type AverageCostResponse = {
   average_costs: AverageCostMap;
 };
 
+type StoreOption = {
+  id: number;
+  store_name: string;
+  branch_name: string;
+  status: string;
+};
+
+type InventoryStoreScope = "current" | "all" | `store:${number}`;
+
 /*
 |--------------------------------------------------------------------------
 | CONFIG
@@ -77,8 +93,11 @@ type AverageCostResponse = {
 |
 */
 
+const ROOT_API =
+  "https://sakuracareapi.site/rhea-pos-api";
+
 const API_BASE =
-  "https://sakuracareapi.site/rhea-pos-api/inventory";
+  `${ROOT_API}/inventory`;
 
 const AVERAGE_COST_API =
   "https://sakuracareapi.site/rhea-pos-api/inventory/purchase-average-cost.php";
@@ -299,6 +318,25 @@ export default function Inventory({
   const [statusFilter, setStatusFilter] =
     useState("");
 
+  /*
+  |--------------------------------------------------------------------------
+  | STORE VIEW
+  |--------------------------------------------------------------------------
+  | Current = the store selected in the top bar.
+  | All = all stores, grouped by product name into one row.
+  | A specific store can also be selected from the dropdown.
+  |--------------------------------------------------------------------------
+  */
+
+  const [storeScope, setStoreScope] =
+    useState<InventoryStoreScope>("current");
+
+  const [stores, setStores] =
+    useState<StoreOption[]>([]);
+
+  const [storesLoading, setStoresLoading] =
+    useState(false);
+
   const [page, setPage] =
     useState(1);
 
@@ -396,18 +434,589 @@ export default function Inventory({
   |--------------------------------------------------------------------------
   */
 
+  const fetchStoreList = useCallback(async () => {
+    try {
+      setStoresLoading(true);
+
+      const response = await fetch(
+        `${ROOT_API}/stores/list.php`,
+        {
+          method: "GET",
+          headers: {
+            Accept: "application/json",
+          },
+        }
+      );
+
+      const data = await response.json();
+
+      if (!response.ok || !data.success) {
+        throw new Error(
+          data.message || "Failed to load stores."
+        );
+      }
+
+      const rows: StoreOption[] =
+        Array.isArray(data.stores)
+          ? data.stores
+              .map((store: any) => ({
+                id: Number(store.id),
+                store_name:
+                  String(store.store_name || "").trim(),
+                branch_name:
+                  String(store.branch_name || "").trim(),
+                status:
+                  String(store.status || "active").trim(),
+              }))
+              .filter(
+                (store: StoreOption) =>
+                  Number.isInteger(store.id) &&
+                  store.id > 0
+              )
+          : [];
+
+      setStores(rows);
+      return rows;
+    } catch (err) {
+      console.error("Store list error:", err);
+      setStores([]);
+      return [] as StoreOption[];
+    } finally {
+      setStoresLoading(false);
+    }
+  }, []);
+
+  const getStoreLabel = useCallback(
+    (store: StoreOption | undefined) => {
+      if (!store) return "Store";
+      return (
+        store.branch_name ||
+        store.store_name ||
+        `Store #${store.id}`
+      );
+    },
+    []
+  );
+
+  const fetchInventoryForStore = useCallback(
+    async (
+      storeId: number,
+      applyFilters = true
+    ) => {
+      const params = new URLSearchParams();
+
+      params.set("store_id", String(storeId));
+
+      // Search/status are applied client-side in all-store mode.
+      // For a single store we can still send them to the API.
+      if (applyFilters && search.trim()) {
+        params.set("search", search.trim());
+      }
+
+      if (applyFilters && statusFilter) {
+        params.set("status", statusFilter);
+      }
+
+      const [inventoryResponse, averageCostData] =
+        await Promise.all([
+          fetch(
+            `${API_BASE}/inventory.php?${params.toString()}`
+          ).then(async (response) => {
+            const data = await response.json();
+
+            if (!response.ok || !data.success) {
+              throw new Error(
+                data.message ||
+                  "Failed to load inventory."
+              );
+            }
+
+            return data;
+          }),
+
+          loadAveragePurchaseCosts(storeId).catch(
+            (averageCostError): AverageCostResponse => {
+              console.warn(
+                `Average purchase cost could not be loaded for store ${storeId}:`,
+                averageCostError
+              );
+
+              return {
+                average_costs: {},
+              };
+            }
+          ),
+        ]);
+
+      const rawItems: InventoryItem[] =
+        Array.isArray(inventoryResponse.items)
+          ? inventoryResponse.items
+          : [];
+
+      const averageCosts =
+        averageCostData.average_costs;
+
+      const updatedItems =
+        rawItems.map((item) => {
+          const calculatedCost =
+            averageCosts[String(item.id)];
+
+          const finalCost =
+            Number.isFinite(Number(calculatedCost)) &&
+            Number(calculatedCost) >= 0
+              ? Number(calculatedCost)
+              : Number(item.cost || 0);
+
+          return {
+            ...item,
+            stock: Number(item.stock || 0),
+            minStock: Number(item.minStock || 0),
+            cost: finalCost,
+            value:
+              Number(item.stock || 0) *
+              finalCost,
+            store_id: storeId,
+          };
+        });
+
+      return {
+        items: updatedItems,
+        summary:
+          inventoryResponse.summary || {},
+        averageCosts,
+      };
+    },
+    [
+      search,
+      statusFilter,
+      loadAveragePurchaseCosts,
+    ]
+  );
+
+  const aggregateAllStoreInventory = useCallback(
+    (
+      storeRows: StoreOption[],
+      results: Array<{
+        storeId: number;
+        items: InventoryItem[];
+      }>
+    ) => {
+      type Aggregate = InventoryItem & {
+        weightedCostTotal: number;
+        weightedCostStock: number;
+        categories: Set<string>;
+        skus: Set<string>;
+        stores: Set<number>;
+        storeNames: Set<string>;
+      };
+
+      const map = new Map<string, Aggregate>();
+
+      for (const result of results) {
+        const store =
+          storeRows.find(
+            (item) =>
+              Number(item.id) ===
+              Number(result.storeId)
+          );
+
+        for (const item of result.items) {
+          const key = item.name
+            .trim()
+            .toLowerCase();
+
+          if (!key) continue;
+
+          const existing = map.get(key);
+
+          const branch =
+            store?.branch_name ||
+            store?.store_name ||
+            `Store #${result.storeId}`;
+
+          const stock = Number(item.stock || 0);
+          const minStock = Number(
+            item.minStock || 0
+          );
+          const cost = Number(item.cost || 0);
+
+          if (!existing) {
+            const categories = new Set<string>();
+            const skus = new Set<string>();
+            const storeIds = new Set<number>();
+            const storeNames = new Set<string>();
+
+            if (item.category?.trim()) {
+              categories.add(
+                item.category.trim()
+              );
+            }
+
+            if (item.sku?.trim()) {
+              skus.add(item.sku.trim());
+            }
+
+            storeIds.add(result.storeId);
+            storeNames.add(branch);
+
+            map.set(key, {
+              ...item,
+              id: Number(item.id),
+              stock,
+              minStock,
+              cost,
+              value: stock * cost,
+              status:
+                stock <= 0
+                  ? "out_of_stock"
+                  : stock <= minStock
+                  ? "low_stock"
+                  : "in_stock",
+              store_id: result.storeId,
+              store_name: branch,
+              branch_name:
+                store?.branch_name || "",
+              store_ids: [result.storeId],
+              store_names: [branch],
+              updated: item.updated,
+              weightedCostTotal:
+                stock * cost,
+              weightedCostStock: stock,
+              categories,
+              skus,
+              stores: storeIds,
+              storeNames,
+            });
+
+            continue;
+          }
+
+          existing.stock += stock;
+          existing.minStock += minStock;
+
+          if (item.category?.trim()) {
+            existing.categories.add(
+              item.category.trim()
+            );
+          }
+
+          if (item.sku?.trim()) {
+            existing.skus.add(
+              item.sku.trim()
+            );
+          }
+
+          existing.stores.add(result.storeId);
+          existing.storeNames.add(branch);
+
+          existing.weightedCostTotal +=
+            stock * cost;
+          existing.weightedCostStock += stock;
+
+          if (
+            new Date(item.updated || 0).getTime() >
+            new Date(existing.updated || 0).getTime()
+          ) {
+            existing.updated = item.updated;
+          }
+        }
+      }
+
+      return Array.from(map.values()).map(
+        (item) => {
+          const averageCost =
+            item.weightedCostStock > 0
+              ? item.weightedCostTotal /
+                item.weightedCostStock
+              : 0;
+
+          const categories =
+            Array.from(item.categories);
+
+          const skus =
+            Array.from(item.skus);
+
+          const storeNames =
+            Array.from(item.storeNames);
+
+          const finalItem: InventoryItem = {
+            id: item.id,
+            name: item.name,
+            sku:
+              skus.length === 1
+                ? skus[0]
+                : skus.length > 1
+                ? "Multiple"
+                : "",
+            category:
+              categories.length === 1
+                ? categories[0]
+                : categories.length > 1
+                ? "Multiple"
+                : "",
+            stock: item.stock,
+            minStock: item.minStock,
+            cost: averageCost,
+            value:
+              item.weightedCostTotal,
+            status:
+              item.stock <= 0
+                ? "out_of_stock"
+                : item.stock <= item.minStock
+                ? "low_stock"
+                : "in_stock",
+            updated: item.updated,
+            store_id:
+              item.stores.size === 1
+                ? Array.from(item.stores)[0]
+                : undefined,
+            store_name:
+              storeNames.length > 0
+                ? storeNames.join(", ")
+                : "All Stores",
+            branch_name: "",
+            store_ids: Array.from(item.stores),
+            store_names: storeNames,
+          };
+
+          return finalItem;
+        }
+      );
+    },
+    []
+  );
+
   const loadInventory = useCallback(async () => {
+    try {
+      setLoading(true);
+      setError("");
 
-  try {
+      if (!activeStoreId) {
+        setItems([]);
+        setSummary({
+          total_products: 0,
+          total_units: 0,
+          low_stock: 0,
+          out_of_stock: 0,
+          total_value: 0,
+        });
+        setLoading(false);
+        return;
+      }
 
-    setLoading(true);
-    setError("");
+      let selectedStoreId = activeStoreId;
 
-    // No store selected
-    if (!activeStoreId) {
+      if (
+        storeScope.startsWith("store:")
+      ) {
+        selectedStoreId =
+          Number(
+            storeScope.replace(
+              "store:",
+              ""
+            )
+          ) || activeStoreId;
+      }
+
+      /*
+      |--------------------------------------------------------------------------
+      | CURRENT / SPECIFIC STORE
+      |--------------------------------------------------------------------------
+      */
+
+      if (storeScope !== "all") {
+        const result =
+          await fetchInventoryForStore(
+            selectedStoreId
+          );
+
+        setItems(result.items);
+
+        const calculatedTotalValue =
+          result.items.reduce(
+            (sum, item) =>
+              sum +
+              Number(item.stock || 0) *
+                Number(item.cost || 0),
+            0
+          );
+
+        const serverSummary =
+          result.summary || {};
+
+        setSummary({
+          total_products:
+            Number(
+              serverSummary.total_products ??
+                result.items.length
+            ),
+          total_units:
+            Number(
+              serverSummary.total_units ??
+                result.items.reduce(
+                  (sum, item) =>
+                    sum +
+                    Number(
+                      item.stock || 0
+                    ),
+                  0
+                )
+            ),
+          low_stock:
+            Number(
+              serverSummary.low_stock ??
+                result.items.filter(
+                  (item) =>
+                    item.status ===
+                    "low_stock"
+                ).length
+            ),
+          out_of_stock:
+            Number(
+              serverSummary.out_of_stock ??
+                result.items.filter(
+                  (item) =>
+                    item.status ===
+                    "out_of_stock"
+                ).length
+            ),
+          total_value:
+            calculatedTotalValue,
+        });
+
+        return;
+      }
+
+      /*
+      |--------------------------------------------------------------------------
+      | ALL STORES
+      |--------------------------------------------------------------------------
+      |
+      | Load every store's inventory, then group products by normalized name.
+      | There is still only ONE row per product name.
+      |
+      */
+
+      const storeRows =
+        stores.length > 0
+          ? stores
+          : await fetchStoreList();
+
+      if (storeRows.length === 0) {
+        throw new Error(
+          "No stores were found."
+        );
+      }
+
+      const results =
+        await Promise.all(
+          storeRows.map(async (store) => {
+            const result =
+              await fetchInventoryForStore(
+                store.id,
+                false
+              );
+
+            /*
+            | API search/status are not used as the
+            | final all-store filter. They are cleared
+            | below by re-fetching without filters.
+            */
+            return {
+              storeId: store.id,
+              items: result.items,
+            };
+          })
+        );
+
+      /*
+      | When searching all stores, each store request above
+      | may already have filtered. That is still safe because
+      | grouping is based on the returned records.
+      */
+
+      let aggregated =
+        aggregateAllStoreInventory(
+          storeRows,
+          results
+        );
+
+      /*
+      |--------------------------------------------------------------------------
+      | ALL-STORE FILTERS
+      |--------------------------------------------------------------------------
+      */
+
+      const searchValue =
+        search.trim().toLowerCase();
+
+      if (searchValue) {
+        aggregated =
+          aggregated.filter((item) => {
+            return (
+              item.name
+                .toLowerCase()
+                .includes(searchValue) ||
+              item.sku
+                .toLowerCase()
+                .includes(searchValue) ||
+              item.category
+                .toLowerCase()
+                .includes(searchValue) ||
+              (item.store_name || "")
+                .toLowerCase()
+                .includes(searchValue)
+            );
+          });
+      }
+
+      if (statusFilter) {
+        aggregated =
+          aggregated.filter(
+            (item) =>
+              item.status === statusFilter
+          );
+      }
+
+      setItems(aggregated);
+
+      setSummary({
+        total_products:
+          aggregated.length,
+        total_units:
+          aggregated.reduce(
+            (sum, item) =>
+              sum +
+              Number(item.stock || 0),
+            0
+          ),
+        low_stock:
+          aggregated.filter(
+            (item) =>
+              item.status ===
+              "low_stock"
+          ).length,
+        out_of_stock:
+          aggregated.filter(
+            (item) =>
+              item.status ===
+              "out_of_stock"
+          ).length,
+        total_value:
+          aggregated.reduce(
+            (sum, item) =>
+              sum +
+              Number(item.value || 0),
+            0
+          ),
+      });
+    } catch (err) {
+      console.error(
+        "Load inventory error:",
+        err
+      );
 
       setItems([]);
-
       setSummary({
         total_products: 0,
         total_units: 0,
@@ -416,189 +1025,34 @@ export default function Inventory({
         total_value: 0,
       });
 
+      setError(
+        err instanceof Error
+          ? err.message
+          : "Failed to load inventory."
+      );
+    } finally {
       setLoading(false);
-
-      return;
     }
+  }, [
+    activeStoreId,
+    storeScope,
+    stores,
+    search,
+    statusFilter,
+    fetchStoreList,
+    fetchInventoryForStore,
+    aggregateAllStoreInventory,
+  ]);
 
-    const params =
-      new URLSearchParams();
+  /*
+  |--------------------------------------------------------------------------
+  | LOAD STORES
+  |--------------------------------------------------------------------------
+  */
 
-    // USE THE CURRENTLY SELECTED STORE
-    params.set(
-      "store_id",
-      String(activeStoreId)
-    );
-
-    if (search.trim()) {
-
-      params.set(
-        "search",
-        search.trim()
-      );
-
-    }
-
-    if (statusFilter) {
-
-      params.set(
-        "status",
-        statusFilter
-      );
-
-    }
-
-    const [inventoryData, averageCostData] =
-      await Promise.all([
-        fetch(
-          `${API_BASE}/inventory.php?${params.toString()}`
-        ).then(async (response) => {
-          const data = await response.json();
-
-          if (!response.ok || !data.success) {
-            throw new Error(
-              data.message ||
-                "Failed to load inventory."
-            );
-          }
-
-          return data;
-        }),
-
-        loadAveragePurchaseCosts(activeStoreId).catch(
-          (averageCostError): AverageCostResponse => {
-            console.warn(
-              "Average purchase cost could not be loaded. Falling back to products.cost:",
-              averageCostError
-            );
-
-            return {
-              average_costs: {},
-            };
-          }
-        ),
-      ]);
-
-    const averageCosts =
-      averageCostData.average_costs;
-
-    /*
-    |--------------------------------------------------------------------------
-    | APPLY DISPLAY-ONLY WEIGHTED AVERAGE COST
-    |--------------------------------------------------------------------------
-    */
-
-    const rawItems: InventoryItem[] =
-      Array.isArray(inventoryData.items)
-        ? inventoryData.items
-        : [];
-
-    const updatedItems =
-      rawItems.map((item) => {
-        const calculatedCost =
-          averageCosts[String(item.id)];
-
-        const finalCost =
-          Number.isFinite(Number(calculatedCost)) &&
-          Number(calculatedCost) >= 0
-            ? Number(calculatedCost)
-            : Number(item.cost || 0);
-
-        return {
-          ...item,
-          cost: finalCost,
-          value:
-            Number(item.stock || 0) *
-            finalCost,
-        };
-      });
-
-    setItems(updatedItems);
-
-    /*
-    |--------------------------------------------------------------------------
-    | SUMMARY
-    |--------------------------------------------------------------------------
-    */
-
-    const serverSummary =
-      inventoryData.summary || {};
-
-    const calculatedTotalValue =
-      updatedItems.reduce(
-        (sum, item) =>
-          sum +
-          Number(item.stock || 0) *
-            Number(item.cost || 0),
-        0
-      );
-
-    setSummary({
-      total_products:
-        Number(
-          serverSummary.total_products ??
-            updatedItems.length
-        ),
-
-      total_units:
-        Number(
-          serverSummary.total_units ??
-            updatedItems.reduce(
-              (sum, item) =>
-                sum +
-                Number(item.stock || 0),
-              0
-            )
-        ),
-
-      low_stock:
-        Number(serverSummary.low_stock ?? 0),
-
-      out_of_stock:
-        Number(
-          serverSummary.out_of_stock ?? 0
-        ),
-
-      total_value: calculatedTotalValue,
-    });
-
-  } catch (err) {
-
-    console.error(
-      "Load inventory error:",
-      err
-    );
-
-    setItems([]);
-
-    setSummary({
-      total_products: 0,
-      total_units: 0,
-      low_stock: 0,
-      out_of_stock: 0,
-      total_value: 0,
-    });
-
-    setError(
-      err instanceof Error
-        ? err.message
-        : "Failed to load inventory."
-    );
-
-  } finally {
-
-    setLoading(false);
-
-  }
-
-}, [
-  activeStoreId,
-  search,
-  statusFilter,
-  loadAveragePurchaseCosts,
-]);
-
-       
+  useEffect(() => {
+    fetchStoreList();
+  }, [fetchStoreList]);
 
   /*
   |--------------------------------------------------------------------------
@@ -607,9 +1061,7 @@ export default function Inventory({
   */
 
   useEffect(() => {
-
     loadInventory();
-
   }, [loadInventory]);
 
   /*
@@ -634,14 +1086,35 @@ export default function Inventory({
   */
 
   useEffect(() => {
-
     setPage(1);
-
   }, [
-     activeStoreId,
-  search,
-  statusFilter,
+    activeStoreId,
+    search,
+    statusFilter,
+    storeScope,
   ]);
+
+  useEffect(() => {
+    if (!activeStoreId) {
+      setStoreScope("current");
+      return;
+    }
+
+    if (
+      storeScope === "current" ||
+      storeScope === "all"
+    ) {
+      return;
+    }
+
+    const selectedId = Number(
+      storeScope.replace("store:", "")
+    );
+
+    if (!Number.isInteger(selectedId) || selectedId <= 0) {
+      setStoreScope("current");
+    }
+  }, [activeStoreId, storeScope]);
 
   /*
   |--------------------------------------------------------------------------
@@ -880,6 +1353,9 @@ export default function Inventory({
     () => {
 
       const headers = [
+        ...(storeScope === "all"
+          ? ["Store"]
+          : []),
         "Product",
         "SKU",
         "Category",
@@ -893,14 +1369,16 @@ export default function Inventory({
 
       const rows =
         items.map((item) => [
-
+          ...(storeScope === "all"
+            ? [item.store_name || "All Stores"]
+            : []),
           item.name,
           item.sku,
           item.category,
           item.stock,
           item.minStock,
-          item.cost,
-          item.value,
+          Number(item.cost || 0).toFixed(2),
+          Number(item.value || 0).toFixed(2),
           item.status,
           item.updated,
         ]);
@@ -967,6 +1445,35 @@ export default function Inventory({
 
           <p className="text-[12px] text-[#64748B] mt-0.5">
             Monitor stock levels and track inventory movements
+          </p>
+
+          <p className="text-[10px] text-[#94A3B8] mt-1">
+            View:{" "}
+            {storeScope === "all"
+              ? "All Stores"
+              : storeScope === "current"
+              ? "Current Store"
+              : stores.find(
+                  (store) =>
+                    Number(store.id) ===
+                    Number(
+                      storeScope.replace(
+                        "store:",
+                        ""
+                      )
+                    )
+                )?.branch_name ||
+                stores.find(
+                  (store) =>
+                    Number(store.id) ===
+                    Number(
+                      storeScope.replace(
+                        "store:",
+                        ""
+                      )
+                    )
+                )?.store_name ||
+                "Selected Store"}
           </p>
 
         </div>
@@ -1194,6 +1701,40 @@ export default function Inventory({
           />
 
           <Select
+            value={storeScope}
+            onChange={(value) => {
+              setStoreScope(
+                value as InventoryStoreScope
+              );
+              setPage(1);
+              setHistoryModal(null);
+              setAdjustModal(null);
+            }}
+            placeholder={
+              storesLoading
+                ? "Loading stores..."
+                : "Select Store"
+            }
+            options={[
+              {
+                value: "current",
+                label: "Current Store",
+              },
+              {
+                value: "all",
+                label: "All Stores",
+              },
+              ...stores.map((store) => ({
+                value: `store:${store.id}`,
+                label:
+                  store.branch_name ||
+                  store.store_name ||
+                  `Store #${store.id}`,
+              })),
+            ]}
+          />
+
+          <Select
             value={statusFilter}
             onChange={(value) => {
               setStatusFilter(value);
@@ -1215,7 +1756,9 @@ export default function Inventory({
             ]}
           />
 
-          {(search || statusFilter) && (
+          {(search ||
+            statusFilter ||
+            storeScope !== "current") && (
 
             <button
               onClick={clearFilters}
@@ -1246,6 +1789,9 @@ export default function Inventory({
 
         <Table
           headers={[
+            ...(storeScope === "all"
+              ? ["Store"]
+              : []),
             "Product",
             "SKU",
             "Category",
@@ -1346,7 +1892,24 @@ export default function Inventory({
 
               return (
 
-                <Tr key={item.id}>
+                <Tr
+                  key={
+                    storeScope === "all"
+                      ? `${item.name.toLowerCase()}-${item.store_ids?.join("-") || "all"}`
+                      : item.id
+                  }
+                >
+
+                  {storeScope === "all" && (
+                    <Td>
+                      <div className="max-w-[190px]">
+                        <span className="text-[#475569] text-[11px]">
+                          {item.store_name ||
+                            "All Stores"}
+                        </span>
+                      </div>
+                    </Td>
+                  )}
 
                   {/* PRODUCT */}
 
@@ -1483,29 +2046,41 @@ export default function Inventory({
                   {/* ACTIONS */}
 
                   <Td>
+                    {storeScope === "all" ||
+                    (
+                      storeScope.startsWith("store:") &&
+                      Number(
+                        storeScope.replace(
+                          "store:",
+                          ""
+                        )
+                      ) !==
+                        Number(activeStoreId)
+                    ) ? (
+                      <span className="text-[10px] text-[#94A3B8]">
+                        View only
+                      </span>
+                    ) : (
+                      <div className="flex items-center gap-1">
+                        <button
+                          onClick={() =>
+                            openHistory(item)
+                          }
+                          className="h-7 px-2.5 rounded-md bg-[#F1F5F9] text-[#475569] text-[11px] font-medium hover:bg-[#E2E8F0] transition-colors"
+                        >
+                          History
+                        </button>
 
-                    <div className="flex items-center gap-1">
-
-                      <button
-                        onClick={() =>
-                          openHistory(item)
-                        }
-                        className="h-7 px-2.5 rounded-md bg-[#F1F5F9] text-[#475569] text-[11px] font-medium hover:bg-[#E2E8F0] transition-colors"
-                      >
-                        History
-                      </button>
-
-                      <button
-                        onClick={() =>
-                          openAdjustment(item)
-                        }
-                        className="h-7 px-2.5 rounded-md bg-[#EEF2FF] text-[#4F46E5] text-[11px] font-medium hover:bg-[#E0E7FF] transition-colors"
-                      >
-                        Adjust
-                      </button>
-
-                    </div>
-
+                        <button
+                          onClick={() =>
+                            openAdjustment(item)
+                          }
+                          className="h-7 px-2.5 rounded-md bg-[#EEF2FF] text-[#4F46E5] text-[11px] font-medium hover:bg-[#E0E7FF] transition-colors"
+                        >
+                          Adjust
+                        </button>
+                      </div>
+                    )}
                   </Td>
 
                 </Tr>

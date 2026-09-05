@@ -210,6 +210,21 @@ export default function Products({
   const [exportLoading, setExportLoading] =
     useState(false);
 
+  const [showImportModal, setShowImportModal] =
+    useState(false);
+
+  const [importScope, setImportScope] =
+    useState<"current" | "all">("current");
+
+  const [importFile, setImportFile] =
+    useState<File | null>(null);
+
+  const [importLoading, setImportLoading] =
+    useState(false);
+
+  const [importResult, setImportResult] =
+    useState<{ created: number; skipped: number; errors: string[] } | null>(null);
+
   const [loading, setLoading] = useState(false);
   const [loadingCategories, setLoadingCategories] =
     useState(false);
@@ -757,6 +772,306 @@ export default function Products({
     } finally {
       setExportLoading(false);
     }
+  };
+
+  /*
+  |--------------------------------------------------------------------------
+  | IMPORT CSV
+  |--------------------------------------------------------------------------
+  |
+  | The import is product-catalog only.
+  |
+  | Current Store:
+  |   - Imports into the selected store.
+  |   - Keeps CSV stock for newly created products.
+  |
+  | All Stores:
+  |   - Checks every active store.
+  |   - Does NOT create a duplicate when the same product name already
+  |     exists in that store.
+  |   - Uses the original existing SKU when a product already exists in
+  |     another store.
+  |   - New products start at 0 stock so importing a catalog never moves
+  |     physical inventory between stores.
+  |
+  | SKU values coming from Excel/CSV are normalized to exactly 8 digits.
+  | Example: 7 -> 00000007, 123 -> 00000123.
+  |--------------------------------------------------------------------------
+  */
+
+  const normalizeImportedSku = (value: unknown): string => {
+    let raw = String(value ?? "")
+      .trim()
+      .replace(/^'/, "");
+
+    if (!raw) {
+      return "";
+    }
+
+    // Excel may give us 7 instead of 00000007.
+    if (/^\d+$/.test(raw)) {
+      if (raw.length > 8) {
+        throw new Error(
+          `SKU "${raw}" has more than 8 digits.`
+        );
+      }
+
+      return raw.padStart(8, "0");
+    }
+
+    throw new Error(
+      `SKU "${raw}" must contain only numbers.`
+    );
+  };
+
+  const parseCsv = (text: string): string[][] => {
+    const rows: string[][] = [];
+    let row: string[] = [];
+    let field = "";
+    let quoted = false;
+
+    for (let i = 0; i < text.length; i++) {
+      const ch = text[i];
+      const next = text[i + 1];
+
+      if (quoted) {
+        if (ch === '"' && next === '"') {
+          field += '"';
+          i++;
+        } else if (ch === '"') {
+          quoted = false;
+        } else {
+          field += ch;
+        }
+      } else if (ch === '"') {
+        quoted = true;
+      } else if (ch === ',') {
+        row.push(field);
+        field = "";
+      } else if (ch === "\n") {
+        row.push(field.replace(/\r$/, ""));
+        rows.push(row);
+        row = [];
+        field = "";
+      } else {
+        field += ch;
+      }
+    }
+
+    row.push(field.replace(/\r$/, ""));
+
+    if (row.some((value) => value.trim() !== "")) {
+      rows.push(row);
+    }
+
+    return rows;
+  };
+
+  const importProductsCsv = async () => {
+    if (importLoading) return;
+
+    if (!activeStoreId) {
+      setError("No store selected.");
+      return;
+    }
+
+    if (!importFile) {
+      setError("Please select a CSV file first.");
+      return;
+    }
+
+    try {
+      setImportLoading(true);
+      setError("");
+      setSuccess("");
+      setImportResult(null);
+
+      const text = await importFile.text();
+      const rawRows = parseCsv(text);
+
+      if (rawRows.length < 2) {
+        throw new Error("The CSV file does not contain product rows.");
+      }
+
+      const headers = rawRows[0].map((header) =>
+        header.trim().replace(/^\uFEFF/, "").toLowerCase()
+      );
+
+      const indexOf = (...names: string[]) => {
+        for (const name of names) {
+          const index = headers.indexOf(name.toLowerCase());
+          if (index >= 0) return index;
+        }
+        return -1;
+      };
+
+      const nameIndex = indexOf("product", "product name", "name");
+      const skuIndex = indexOf("sku");
+      const barcodeIndex = indexOf("barcode");
+      const categoryIndex = indexOf("category");
+      const priceIndex = indexOf("price");
+      const costIndex = indexOf("cost (average)", "cost", "average cost");
+      const stockIndex = indexOf("stock", "on hand");
+      const statusIndex = indexOf("status");
+
+      if (nameIndex < 0) {
+        throw new Error(
+          "CSV must contain a Product column."
+        );
+      }
+
+      const rows = rawRows
+        .slice(1)
+        .map((values, rowIndex) => {
+          const get = (index: number) =>
+            index >= 0 ? String(values[index] ?? "").trim() : "";
+
+          const name = get(nameIndex);
+
+          if (!name) return null;
+
+          let sku = "";
+          if (skuIndex >= 0) {
+            sku = normalizeImportedSku(get(skuIndex));
+          }
+
+          const price = Number(
+            get(priceIndex).replace(/,/g, "") || 0
+          );
+
+          const cost = Number(
+            get(costIndex).replace(/,/g, "") || 0
+          );
+
+          const stock = Number(
+            get(stockIndex).replace(/,/g, "") || 0
+          );
+
+          if (!Number.isFinite(price) || price < 0) {
+            throw new Error(
+              `Row ${rowIndex + 2}: invalid price for "${name}".`
+            );
+          }
+
+          if (!Number.isFinite(cost) || cost < 0) {
+            throw new Error(
+              `Row ${rowIndex + 2}: invalid cost for "${name}".`
+            );
+          }
+
+          if (!Number.isFinite(stock) || stock < 0) {
+            throw new Error(
+              `Row ${rowIndex + 2}: invalid stock for "${name}".`
+            );
+          }
+
+          return {
+            name,
+            sku,
+            barcode: get(barcodeIndex),
+            category_name: get(categoryIndex),
+            price,
+            cost,
+            stock,
+            status: get(statusIndex) === "inactive"
+              ? "inactive"
+              : "active",
+          };
+        })
+        .filter(
+          (row): row is {
+            name: string;
+            sku: string;
+            barcode: string;
+            category_name: string;
+            price: number;
+            cost: number;
+            stock: number;
+            status: string;
+          } => row !== null
+        );
+
+      if (rows.length === 0) {
+        throw new Error("No valid product rows were found in the CSV.");
+      }
+
+      // Deduplicate the imported file itself by normalized product name.
+      const uniqueRows = Array.from(
+        new Map(
+          rows.map((row) => [
+            row.name.trim().toLowerCase(),
+            row,
+          ])
+        ).values()
+      );
+
+      const response = await fetch(
+        `${API_BASE}/products/import.php`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Accept: "application/json",
+          },
+          body: JSON.stringify({
+            store_id: activeStoreId,
+            scope: importScope,
+            products: uniqueRows,
+          }),
+        }
+      );
+
+      const responseText = await response.text();
+      let data: any;
+
+      try {
+        data = JSON.parse(responseText);
+      } catch {
+        throw new Error(
+          `Import API did not return valid JSON:\n${responseText.substring(0, 500)}`
+        );
+      }
+
+      if (!response.ok || !data.success) {
+        throw new Error(
+          data.message || "Failed to import products."
+        );
+      }
+
+      setImportResult({
+        created: Number(data.created || 0),
+        skipped: Number(data.skipped || 0),
+        errors: Array.isArray(data.errors)
+          ? data.errors
+          : [],
+      });
+
+      setSuccess(
+        `Import completed: ${Number(data.created || 0)} created, ${Number(data.skipped || 0)} already existed.`
+      );
+
+      setShowImportModal(false);
+      setImportFile(null);
+
+      await refreshProducts();
+    } catch (err) {
+      console.error("Product import error:", err);
+
+      setError(
+        err instanceof Error
+          ? err.message
+          : "Failed to import products."
+      );
+    } finally {
+      setImportLoading(false);
+    }
+  };
+
+  const closeImportModal = () => {
+    if (importLoading) return;
+    setShowImportModal(false);
+    setImportFile(null);
+    setImportResult(null);
   };
 
   const closeAllStores = () => {
@@ -1661,6 +1976,22 @@ export default function Products({
           <Button
             variant="secondary"
             size="sm"
+            onClick={() => {
+              setError("");
+              setSuccess("");
+              setImportResult(null);
+              setImportFile(null);
+              setImportScope("current");
+              setShowImportModal(true);
+            }}
+            disabled={importLoading}
+          >
+            Import
+          </Button>
+
+          <Button
+            variant="secondary"
+            size="sm"
             onClick={openAllStores}
             disabled={loadingAllStores}
           >
@@ -2287,7 +2618,151 @@ export default function Products({
         </div>
       )}
 
-      {/* EXPORT MODAL */}
+      {/* IMPORT MODAL */}
+
+      {showImportModal && (
+        <div className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-[500px]">
+            <div className="flex items-center justify-between px-5 py-4 border-b border-[#E2E8F0]">
+              <div>
+                <h3 className="text-[15px] font-bold text-[#0F172A]">
+                  Import Products
+                </h3>
+                <p className="text-[11px] text-[#64748B] mt-0.5">
+                  Import the Products CSV exported from Rhea POS or Excel.
+                </p>
+              </div>
+
+              <button
+                type="button"
+                onClick={closeImportModal}
+                disabled={importLoading}
+                className="w-8 h-8 rounded-lg hover:bg-slate-100 text-slate-500 disabled:opacity-50"
+              >
+                ×
+              </button>
+            </div>
+
+            <div className="p-5 space-y-4">
+              <div>
+                <label className="text-[12px] font-medium text-[#374151] block mb-1">
+                  CSV File
+                </label>
+
+                <input
+                  type="file"
+                  accept=".csv,text/csv"
+                  disabled={importLoading}
+                  onChange={(e) => {
+                    const file = e.target.files?.[0] ?? null;
+                    setImportFile(file);
+                    setImportResult(null);
+                  }}
+                  className="w-full text-[12px] text-[#475569]"
+                />
+
+                <p className="text-[10px] text-[#94A3B8] mt-1">
+                  Excel: save the sheet as CSV before importing. SKU values like 7 or 0000007 become 00000007 automatically.
+                </p>
+              </div>
+
+              <div>
+                <p className="text-[12px] font-medium text-[#374151] mb-2">
+                  Import Scope
+                </p>
+
+                <div className="grid grid-cols-2 gap-2">
+                  <button
+                    type="button"
+                    disabled={importLoading}
+                    onClick={() => setImportScope("current")}
+                    className={`rounded-xl border p-4 text-left transition-colors ${
+                      importScope === "current"
+                        ? "border-[#4F46E5] bg-[#EEF2FF]"
+                        : "border-[#E2E8F0] hover:bg-[#F8FAFC]"
+                    }`}
+                  >
+                    <p className="text-[13px] font-semibold text-[#0F172A]">
+                      Current Store
+                    </p>
+                    <p className="text-[10px] text-[#64748B] mt-1">
+                      Import into the currently selected store.
+                    </p>
+                  </button>
+
+                  <button
+                    type="button"
+                    disabled={importLoading}
+                    onClick={() => setImportScope("all")}
+                    className={`rounded-xl border p-4 text-left transition-colors ${
+                      importScope === "all"
+                        ? "border-[#4F46E5] bg-[#EEF2FF]"
+                        : "border-[#E2E8F0] hover:bg-[#F8FAFC]"
+                    }`}
+                  >
+                    <p className="text-[13px] font-semibold text-[#0F172A]">
+                      All Stores
+                    </p>
+                    <p className="text-[10px] text-[#64748B] mt-1">
+                      Create missing products in active stores only.
+                    </p>
+                  </button>
+                </div>
+              </div>
+
+              {importScope === "all" && (
+                <div className="rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2">
+                  <p className="text-[10px] text-emerald-700 leading-4">
+                    Existing products are detected by product name. No duplicate row is created. New products in other stores start with 0 stock. Their SKU is kept from the original product whenever available.
+                  </p>
+                </div>
+              )}
+
+              {importResult && (
+                <div className="rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-3">
+                  <p className="text-[11px] font-semibold text-emerald-800">
+                    Import complete
+                  </p>
+                  <p className="text-[10px] text-emerald-700 mt-1">
+                    Created: {importResult.created} · Already existed: {importResult.skipped}
+                  </p>
+                  {importResult.errors.length > 0 && (
+                    <div className="mt-2 text-[10px] text-red-600 space-y-1">
+                      {importResult.errors.slice(0, 5).map((message, index) => (
+                        <p key={`${index}-${message}`}>
+                          {message}
+                        </p>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
+
+              <div className="flex justify-end gap-2 pt-1">
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={closeImportModal}
+                  disabled={importLoading}
+                >
+                  Cancel
+                </Button>
+
+                <Button
+                  variant="primary"
+                  size="sm"
+                  onClick={importProductsCsv}
+                  disabled={importLoading || !importFile}
+                >
+                  {importLoading ? "Importing..." : "Import Products"}
+                </Button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+            {/* EXPORT MODAL */}
 
       {showExportModal && (
         <div className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-4">
