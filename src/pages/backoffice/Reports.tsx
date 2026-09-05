@@ -1172,7 +1172,14 @@ export default function Reports({
               box-sizing: border-box !important;
             }
 
-            .reports-print-area {
+            /* Never show report action buttons on printed/print-preview output */
+          .reports-print-actions,
+          .reports-print-actions * {
+            display: none !important;
+            visibility: hidden !important;
+          }
+
+          .reports-print-area {
               width: 190mm !important;
               max-width: 190mm !important;
               min-width: 190mm !important;
@@ -2690,7 +2697,7 @@ export default function Reports({
             </div>
           </div>
 
-          <div className="flex justify-end gap-2 mt-5 print:hidden">
+          <div className="reports-print-actions flex justify-end gap-2 mt-5 print:hidden">
             <Button
               variant="secondary"
               size="sm"
