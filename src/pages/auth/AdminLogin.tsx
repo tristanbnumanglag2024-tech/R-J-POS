@@ -1,7 +1,17 @@
 import { useState } from "react";
 
+interface AdminUser {
+  id: number | string;
+  username?: string | null;
+  email?: string | null;
+  phone?: string | null;
+  full_name?: string | null;
+  role?: string | null;
+  status?: string | null;
+}
+
 interface AdminLoginProps {
-  onLogin: () => void;
+  onLogin: (user: AdminUser) => void;
 }
 
 export default function AdminLogin({ onLogin }: AdminLoginProps) {
@@ -12,33 +22,87 @@ export default function AdminLogin({ onLogin }: AdminLoginProps) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
 
     setError("");
 
-    if (!email.trim() || !password.trim()) {
+    const login = email.trim();
+    const passwordValue = password;
+
+    if (!login || !passwordValue) {
       setError("Please enter your email and password.");
       return;
     }
 
     setLoading(true);
 
-    // Temporary login flow.
-    // Replace this with your PHP authentication API later.
-    setTimeout(() => {
-      localStorage.setItem(
-        "admin",
-        JSON.stringify({
-          email,
-          loggedIn: true,
-          remember,
-        })
+    try {
+      const response = await fetch(
+        "https://sakuracareapi.site/rhea-pos-api/admin/login.php",
+        {
+          method: "POST",
+          credentials: "include",
+          headers: {
+            "Content-Type": "application/json",
+            Accept: "application/json",
+          },
+          body: JSON.stringify({
+            login,
+            password: passwordValue,
+          }),
+        }
       );
 
+      const text = await response.text();
+      let data: {
+        success?: boolean;
+        message?: string;
+        user?: AdminUser;
+      };
+
+      try {
+        data = JSON.parse(text);
+      } catch {
+        throw new Error(
+          text.trim().startsWith("<")
+            ? "The server returned HTML instead of JSON. Please check the PHP API."
+            : `Invalid server response: ${text.substring(0, 250)}`
+        );
+      }
+
+      if (!response.ok || !data.success || !data.user) {
+        setError(data.message || "Invalid email or password.");
+        return;
+      }
+
+      if (String(data.user.role ?? "").toLowerCase() !== "admin") {
+        setError("This account does not have administrator access.");
+        return;
+      }
+
+      if (String(data.user.status ?? "active").toLowerCase() !== "active") {
+        setError("Your administrator account is inactive.");
+        return;
+      }
+
+      // Keep the authenticated admin record locally only for UI restore.
+      // The backend PHP session remains the authentication source of truth.
+      localStorage.setItem("admin", JSON.stringify(data.user));
+      localStorage.setItem("admin_remember", remember ? "true" : "false");
+
       setLoading(false);
-      onLogin();
-    }, 700);
+      onLogin(data.user);
+    } catch (error) {
+      console.error("Admin login error:", error);
+      setError(
+        error instanceof Error
+          ? error.message
+          : "Unable to connect to the server."
+      );
+    } finally {
+      setLoading(false);
+    }
   };
 
   return (

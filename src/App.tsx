@@ -219,10 +219,40 @@ type CartItem = {
 const API_BASE = "https://sakuracareapi.site/rhea-pos-api";
 
 // ============================================================
+// AUTHENTICATED ADMIN USER ID
+// ============================================================
+// Settings is centralized by user_id, so always read the
+// currently logged-in admin ID from the same admin session
+// already used by this App.
+function getAuthenticatedAdminUserId(): number | null {
+  try {
+    const savedAdmin = localStorage.getItem("admin");
+
+    if (!savedAdmin) {
+      return null;
+    }
+
+    const parsed = JSON.parse(savedAdmin);
+    const id = Number(parsed?.id);
+
+    return Number.isInteger(id) && id > 0 ? id : null;
+  } catch (error) {
+    console.error("Unable to read authenticated admin ID:", error);
+    return null;
+  }
+}
+
+// ============================================================
 // APP
 // ============================================================
 
 export default function App() {
+
+  // Currently logged-in admin user ID.
+  // General Settings is centralized by this user_id only.
+  const [adminUserId, setAdminUserId] = useState<number | null>(
+    getAuthenticatedAdminUserId()
+  );
 
   // ==========================================================
   // APP MODE
@@ -576,9 +606,12 @@ const [mode, setMode] = useState<AppMode>(() => {
 
     return (
       <AdminLogin
-        onLogin={() =>
-          setMode("back-office")
-        }
+        onLogin={() => {
+          // AdminLogin has already authenticated the user and saved
+          // the authenticated admin record. Read ONLY its user ID.
+          setAdminUserId(getAuthenticatedAdminUserId());
+          setMode("back-office");
+        }}
 
         onSwitchToPOS={() =>
           setMode("pos-login")
@@ -792,7 +825,11 @@ case "add-product":
   );
 
       case "receipts":
-        return <Receipts />;
+        return (
+          <Receipts
+            activeStoreId={selectedStore?.id ?? null}
+          />
+        );
 
       case "store-transfers":
         return (
@@ -876,7 +913,10 @@ case "add-product":
   );
 
       case "settings":
-        return <Settings />;
+        return (
+          <Settings
+          />
+        );
 
       default:
         return null;
@@ -904,7 +944,7 @@ case "add-product":
   if (!confirmed) return;
 
   localStorage.removeItem("admin");
-
+  setAdminUserId(null);
 
   setMode("admin-login");
 }}

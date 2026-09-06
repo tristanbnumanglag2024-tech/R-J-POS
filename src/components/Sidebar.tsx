@@ -1,3 +1,4 @@
+import React from "react";
 import logo from "/logo2.png";
 
 type Page =
@@ -42,6 +43,15 @@ interface Store {
   logo?: string | null;
   status?: string;
 }
+
+interface GeneralSettings {
+  business_name?: string | null;
+  logo?: string | null;
+}
+
+const API_BASE = "https://sakuracareapi.site/rhea-pos-api";
+const DEFAULT_BUSINESS_NAME = "R&J POS";
+const DEFAULT_LOGO = "/logo2.png";
 
 const navGroups = [
   {
@@ -153,9 +163,74 @@ export default function Sidebar({
   const admin = getAdmin();
   const selectedStore = getSelectedStore();
 
+  const [generalSettings, setGeneralSettings] = React.useState<GeneralSettings | null>(null);
+
+  React.useEffect(() => {
+    let cancelled = false;
+
+    const loadGeneralSettings = async () => {
+      const userId = admin?.id;
+
+      if (!userId) {
+        if (!cancelled) setGeneralSettings(null);
+        return;
+      }
+
+      try {
+        const response = await fetch(
+          `${API_BASE}/settings/general/get.php?user_id=${encodeURIComponent(String(userId))}`,
+          { credentials: "include" }
+        );
+
+        if (!response.ok) {
+          throw new Error(`HTTP ${response.status}`);
+        }
+
+        const data = await response.json();
+        if (!cancelled) {
+          setGeneralSettings(data?.settings ?? null);
+        }
+      } catch (error) {
+        console.error("Unable to load general settings:", error);
+        if (!cancelled) setGeneralSettings(null);
+      }
+    };
+
+    loadGeneralSettings();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [admin?.id]);
+
   // ============================================================
   // DISPLAY VALUES
   // ============================================================
+
+  const getGeneralLogoUrl = (logoPath: string | null | undefined) => {
+    const value = String(logoPath || "").trim();
+
+    if (!value) {
+      return DEFAULT_LOGO;
+    }
+
+    if (/^https?:\/\//i.test(value)) {
+      return value;
+    }
+
+    if (value.startsWith("data:")) {
+      return value;
+    }
+
+    return `${API_BASE}/${value.replace(/^\/+/, "")}`;
+  };
+
+  const businessName =
+    generalSettings?.business_name?.trim() || DEFAULT_BUSINESS_NAME;
+
+  const businessLogo = getGeneralLogoUrl(
+    generalSettings?.logo
+  );
 
   const adminName =
     admin?.full_name ||
@@ -208,9 +283,14 @@ export default function Sidebar({
           <div className="w-9 h-9 rounded-lg bg-white flex items-center justify-center shrink-0 overflow-hidden">
 
             <img
-              src={logo}
-              alt="Rhea POS"
+              src={businessLogo}
+              alt={businessName}
               className="w-full h-full object-contain p-1"
+              onError={(event) => {
+                if (event.currentTarget.src !== new URL(DEFAULT_LOGO, window.location.origin).href) {
+                  event.currentTarget.src = DEFAULT_LOGO;
+                }
+              }}
             />
 
           </div>
@@ -218,7 +298,7 @@ export default function Sidebar({
           <div className="min-w-0">
 
             <p className="text-white text-[13px] font-semibold leading-tight truncate">
-              Rhea POS
+              {businessName}
             </p>
 
             <p className="text-white/40 text-[10px] leading-tight truncate">

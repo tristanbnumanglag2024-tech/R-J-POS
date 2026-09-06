@@ -54,6 +54,8 @@ type EmployeeForm = {
   email: string;
   phone: string;
   role: string;
+  password: string;
+  confirmPassword: string;
   pin: string;
   confirmPin: string;
   status: string;
@@ -217,6 +219,8 @@ const EMPTY_FORM: EmployeeForm = {
   email: "",
   phone: "",
   role: "",
+  password: "",
+  confirmPassword: "",
   pin: "",
   confirmPin: "",
   status: "active",
@@ -417,6 +421,8 @@ useEffect(() => {
       email: employee.email || "",
       phone: employee.phone || "",
       role: normalizeRole(employee.role || ""),
+      password: "",
+      confirmPassword: "",
       pin: "",
       confirmPin: "",
       status: employee.status || "active",
@@ -454,6 +460,21 @@ if (!form.role) {
 
 if (form.storeIds.length === 0) {
   showFormError("Please assign at least one store.");
+  return;
+}
+
+if (!form.password) {
+  showFormError("Please enter a terminal POS password.");
+  return;
+}
+
+if (form.password.length < 6) {
+  showFormError("Password must be at least 6 characters.");
+  return;
+}
+
+if (form.password !== form.confirmPassword) {
+  showFormError("Password confirmation does not match.");
   return;
 }
 
@@ -497,6 +518,8 @@ if (form.pin !== form.confirmPin) {
   name: form.name.trim(),
   email: form.email.trim(),
   phone: form.phone.trim(),
+  password: form.password,
+  confirmPassword: form.confirmPassword,
   role: form.role,
   pin: form.pin,
   confirmPin: form.confirmPin,
@@ -565,6 +588,16 @@ if (form.pin !== form.confirmPin) {
       return;
     }
 
+    if (form.password && form.password.length < 6) {
+      showFormError("Password must be at least 6 characters.");
+      return;
+    }
+
+    if (form.password && form.password !== form.confirmPassword) {
+      showFormError("Password confirmation does not match.");
+      return;
+    }
+
     if (form.pin && !/^\d{4}$/.test(form.pin)) {
       showFormError("PIN must contain exactly 4 digits.");
       return;
@@ -591,6 +624,8 @@ if (form.pin !== form.confirmPin) {
             name: form.name.trim(),
             email: form.email.trim(),
             phone: form.phone.trim(),
+            password: form.password,
+  confirmPassword: form.confirmPassword,
             role: form.role,
             status: form.status,
             store_ids: form.storeIds,
@@ -1139,6 +1174,33 @@ if (form.pin !== form.confirmPin) {
               options={ROLES}
             />
 
+            {/* TERMINAL POS PASSWORD */}
+            <div className="grid grid-cols-2 gap-3">
+              <Input
+                label="Terminal POS Password"
+                value={form.password}
+                onChange={(value) =>
+                  setFormValue("password", value)
+                }
+                placeholder="Enter password"
+                type="password"
+              />
+
+              <Input
+                label="Confirm Password"
+                value={form.confirmPassword}
+                onChange={(value) =>
+                  setFormValue("confirmPassword", value)
+                }
+                placeholder="Confirm password"
+                type="password"
+              />
+            </div>
+
+            <p className="text-[10px] text-[#94A3B8] -mt-2">
+              Used to sign in to the POS terminal. This is different from the 4-digit PIN.
+            </p>
+
             {/* STORE ASSIGNMENT */}
             <div>
               <p className="text-[12px] font-medium text-[#374151] mb-2">
@@ -1402,6 +1464,33 @@ if (form.pin !== form.confirmPin) {
               />
             </div>
 
+            {/* TERMINAL POS PASSWORD */}
+            <div className="mt-4 grid grid-cols-2 gap-3">
+              <Input
+                label="New Terminal POS Password"
+                value={form.password}
+                onChange={(value) =>
+                  setFormValue("password", value)
+                }
+                placeholder="Leave blank to keep current password"
+                type="password"
+              />
+
+              <Input
+                label="Confirm New Password"
+                value={form.confirmPassword}
+                onChange={(value) =>
+                  setFormValue("confirmPassword", value)
+                }
+                placeholder="Confirm new password"
+                type="password"
+              />
+            </div>
+
+            <p className="text-[10px] text-[#94A3B8] mt-1">
+              Used for POS terminal login. This password is separate from the 4-digit PIN.
+            </p>
+
             {/* STORE ASSIGNMENT */}
             <div>
               <p className="text-[12px] font-semibold text-[#64748B] uppercase tracking-wider mb-2">
@@ -1459,7 +1548,11 @@ if (form.pin !== form.confirmPin) {
 
                         <div>
                           <p className="text-[12px] font-medium text-[#0F172A]">
-                            {store.name}
+                            {store.branch_name || store.name || store.store_name || "Unnamed Branch"}
+                          </p>
+
+                          <p className="text-[10px] text-[#64748B]">
+                            {store.store_name || ""}
                           </p>
 
                           {store.address && (
