@@ -5045,39 +5045,29 @@ ${text.substring(
                           </select>
 
                         </div>
-
-                        {/* QUANTITY */}
+  {/* Stock  */}
 
                         <div>
 
                           <label className="text-[11px] font-medium text-[#64748B] block mb-1">
-                            Quantity
+                            Current Stock
                           </label>
 
-                          <input
-                            type="number"
-                            min="1"
-                            step="1"
+                          <input disabled
+                            type="text"
                             value={
-                              item.quantity
+                              selectedProduct
+                                ? Number(
+                                    selectedProduct.stock ||
+                                      0
+                                  ).toLocaleString()
+                                : ""
                             }
-                            onChange={(
-                              event
-                            ) =>
-                              updateItem(
-                                index,
-                                "quantity",
-                                Number(
-                                  event
-                                    .target
-                                    .value
-                                )
-                              )
-                            }
-                            className="w-full h-9 px-2 text-[12px] rounded-lg border border-[#E2E8F0] focus:outline-none focus:border-[#4F46E5]"
+                            className="w-full h-9 px-2 text-[12px] rounded-lg "
                           />
 
                         </div>
+                      
 
                         {/* UNIT COST */}
 
@@ -5113,25 +5103,35 @@ ${text.substring(
                         </div>
 
 
-                         {/* UNIT COST */}
+                         {/* QUANTITY */}
 
                         <div>
 
                           <label className="text-[11px] font-medium text-[#64748B] block mb-1">
-                            Current Stock
+                            Quantity
                           </label>
 
-                          <input disabled
-                            type="text"
+                          <input
+                            type="number"
+                            min="1"
+                            step="1"
                             value={
-                              selectedProduct
-                                ? Number(
-                                    selectedProduct.stock ||
-                                      0
-                                  ).toLocaleString()
-                                : ""
+                              item.quantity
                             }
-                            className="w-full h-9 px-2 text-[12px] rounded-lg "
+                            onChange={(
+                              event
+                            ) =>
+                              updateItem(
+                                index,
+                                "quantity",
+                                Number(
+                                  event
+                                    .target
+                                    .value
+                                )
+                              )
+                            }
+                            className="w-full h-9 px-2 text-[12px] rounded-lg border border-[#E2E8F0] focus:outline-none focus:border-[#4F46E5]"
                           />
 
                         </div>
