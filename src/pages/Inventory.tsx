@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import {
   Card,
@@ -34,13 +34,12 @@ type InventoryItem = {
     | "low_stock"
     | "out_of_stock";
   updated: string;
+  product_id: number;
 
-  // Used by the all-store view. These fields are display-only.
-  store_id?: number;
+  // Centralized inventory row: one master product + one branch stock record.
+  store_id: number;
   store_name?: string;
   branch_name?: string;
-  store_ids?: number[];
-  store_names?: string[];
 };
 
 type InventorySummary = {
@@ -69,20 +68,12 @@ type HistoryItem = {
   created_at: string;
 };
 
-type AverageCostMap = Record<string, number>;
-
-type AverageCostResponse = {
-  average_costs: AverageCostMap;
-};
-
 type StoreOption = {
   id: number;
   store_name: string;
   branch_name: string;
   status: string;
 };
-
-type InventoryStoreScope = "current" | "all" | `store:${number}`;
 
 /*
 |--------------------------------------------------------------------------
@@ -98,9 +89,6 @@ const ROOT_API =
 
 const API_BASE =
   `${ROOT_API}/inventory`;
-
-const AVERAGE_COST_API =
-  "https://sakuracareapi.site/rhea-pos-api/inventory/purchase-average-cost.php";
 
 /*
 |--------------------------------------------------------------------------
@@ -283,7 +271,7 @@ function getMovementColor(type: string | null) {
 */
 
 export default function Inventory({
-  activeStoreId,
+  activeStoreId: _activeStoreId,
 }: {
   activeStoreId: number | null;
 }) {
@@ -320,16 +308,17 @@ export default function Inventory({
 
   /*
   |--------------------------------------------------------------------------
-  | STORE VIEW
+  | CENTRALIZED INVENTORY VIEW
   |--------------------------------------------------------------------------
-  | Current = the store selected in the top bar.
-  | All = all stores, grouped by product name into one row.
-  | A specific store can also be selected from the dropdown.
+  | One row per product per branch. The product itself is centralized;
+  | stock, minimum stock, cost and value remain branch-specific.
   |--------------------------------------------------------------------------
   */
 
-  const [storeScope, setStoreScope] =
-    useState<InventoryStoreScope>("current");
+  const [branchFilter, setBranchFilter] =
+    useState<number | "">("");
+
+  const inventoryRequestRef = useRef<AbortController | null>(null);
 
   const [stores, setStores] =
     useState<StoreOption[]>([]);
@@ -364,69 +353,6 @@ export default function Inventory({
     });
 
   const PER_PAGE = 8;
-
-  /*
-  |--------------------------------------------------------------------------
-  | LOAD WEIGHTED AVERAGE PURCHASE COST
-  |--------------------------------------------------------------------------
-  |
-  | Display-only calculation.
-  | It DOES NOT update products.cost in MySQL.
-  |
-  | Formula:
-  | SUM(received_quantity * unit_cost)
-  | -----------------------------------
-  | SUM(received_quantity)
-  |
-  |--------------------------------------------------------------------------
-  */
-
-  const loadAveragePurchaseCosts = useCallback(
-    async (storeId: number): Promise<AverageCostResponse> => {
-      const response = await fetch(
-        `${AVERAGE_COST_API}?store_id=${encodeURIComponent(
-          String(storeId)
-        )}`,
-        {
-          method: "GET",
-          headers: {
-            Accept: "application/json",
-          },
-        }
-      );
-
-      const text = await response.text();
-
-      let data: any;
-
-      try {
-        data = JSON.parse(text);
-      } catch {
-        throw new Error(
-          `Average cost API did not return valid JSON:\n${text.substring(
-            0,
-            500
-          )}`
-        );
-      }
-
-      if (!response.ok || !data.success) {
-        throw new Error(
-          data.message ||
-            "Failed to load average purchase costs."
-        );
-      }
-
-      return {
-        average_costs:
-          data.average_costs &&
-          typeof data.average_costs === "object"
-            ? (data.average_costs as AverageCostMap)
-            : {},
-      };
-    },
-    []
-  );
 
   /*
   |--------------------------------------------------------------------------
@@ -498,523 +424,147 @@ export default function Inventory({
     []
   );
 
-  const fetchInventoryForStore = useCallback(
-    async (
-      storeId: number,
-      applyFilters = true
-    ) => {
-      const params = new URLSearchParams();
-
-      params.set("store_id", String(storeId));
-
-      // Search/status are applied client-side in all-store mode.
-      // For a single store we can still send them to the API.
-      if (applyFilters && search.trim()) {
-        params.set("search", search.trim());
-      }
-
-      if (applyFilters && statusFilter) {
-        params.set("status", statusFilter);
-      }
-
-      const [inventoryResponse, averageCostData] =
-        await Promise.all([
-          fetch(
-            `${API_BASE}/inventory.php?${params.toString()}`
-          ).then(async (response) => {
-            const data = await response.json();
-
-            if (!response.ok || !data.success) {
-              throw new Error(
-                data.message ||
-                  "Failed to load inventory."
-              );
-            }
-
-            return data;
-          }),
-
-          loadAveragePurchaseCosts(storeId).catch(
-            (averageCostError): AverageCostResponse => {
-              console.warn(
-                `Average purchase cost could not be loaded for store ${storeId}:`,
-                averageCostError
-              );
-
-              return {
-                average_costs: {},
-              };
-            }
-          ),
-        ]);
-
-      const rawItems: InventoryItem[] =
-        Array.isArray(inventoryResponse.items)
-          ? inventoryResponse.items
-          : [];
-
-      const averageCosts =
-        averageCostData.average_costs;
-
-      const updatedItems =
-        rawItems.map((item) => {
-          const calculatedCost =
-            averageCosts[String(item.id)];
-
-          const finalCost =
-            Number.isFinite(Number(calculatedCost)) &&
-            Number(calculatedCost) >= 0
-              ? Number(calculatedCost)
-              : Number(item.cost || 0);
-
-          return {
-            ...item,
-            stock: Number(item.stock || 0),
-            minStock: Number(item.minStock || 0),
-            cost: finalCost,
-            value:
-              Number(item.stock || 0) *
-              finalCost,
-            store_id: storeId,
-          };
-        });
-
-      return {
-        items: updatedItems,
-        summary:
-          inventoryResponse.summary || {},
-        averageCosts,
-      };
-    },
-    [
-      search,
-      statusFilter,
-      loadAveragePurchaseCosts,
-    ]
-  );
-
-  const aggregateAllStoreInventory = useCallback(
-    (
-      storeRows: StoreOption[],
-      results: Array<{
-        storeId: number;
-        items: InventoryItem[];
-      }>
-    ) => {
-      type Aggregate = InventoryItem & {
-        weightedCostTotal: number;
-        weightedCostStock: number;
-        categories: Set<string>;
-        skus: Set<string>;
-        stores: Set<number>;
-        storeNames: Set<string>;
-      };
-
-      const map = new Map<string, Aggregate>();
-
-      for (const result of results) {
-        const store =
-          storeRows.find(
-            (item) =>
-              Number(item.id) ===
-              Number(result.storeId)
-          );
-
-        for (const item of result.items) {
-          const key = item.name
-            .trim()
-            .toLowerCase();
-
-          if (!key) continue;
-
-          const existing = map.get(key);
-
-          const branch =
-            store?.branch_name ||
-            store?.store_name ||
-            `Store #${result.storeId}`;
-
-          const stock = Number(item.stock || 0);
-          const minStock = Number(
-            item.minStock || 0
-          );
-          const cost = Number(item.cost || 0);
-
-          if (!existing) {
-            const categories = new Set<string>();
-            const skus = new Set<string>();
-            const storeIds = new Set<number>();
-            const storeNames = new Set<string>();
-
-            if (item.category?.trim()) {
-              categories.add(
-                item.category.trim()
-              );
-            }
-
-            if (item.sku?.trim()) {
-              skus.add(item.sku.trim());
-            }
-
-            storeIds.add(result.storeId);
-            storeNames.add(branch);
-
-            map.set(key, {
-              ...item,
-              id: Number(item.id),
-              stock,
-              minStock,
-              cost,
-              value: stock * cost,
-              status:
-                stock <= 0
-                  ? "out_of_stock"
-                  : stock <= minStock
-                  ? "low_stock"
-                  : "in_stock",
-              store_id: result.storeId,
-              store_name: branch,
-              branch_name:
-                store?.branch_name || "",
-              store_ids: [result.storeId],
-              store_names: [branch],
-              updated: item.updated,
-              weightedCostTotal:
-                stock * cost,
-              weightedCostStock: stock,
-              categories,
-              skus,
-              stores: storeIds,
-              storeNames,
-            });
-
-            continue;
-          }
-
-          existing.stock += stock;
-          existing.minStock += minStock;
-
-          if (item.category?.trim()) {
-            existing.categories.add(
-              item.category.trim()
-            );
-          }
-
-          if (item.sku?.trim()) {
-            existing.skus.add(
-              item.sku.trim()
-            );
-          }
-
-          existing.stores.add(result.storeId);
-          existing.storeNames.add(branch);
-
-          existing.weightedCostTotal +=
-            stock * cost;
-          existing.weightedCostStock += stock;
-
-          if (
-            new Date(item.updated || 0).getTime() >
-            new Date(existing.updated || 0).getTime()
-          ) {
-            existing.updated = item.updated;
-          }
-        }
-      }
-
-      return Array.from(map.values()).map(
-        (item) => {
-          const averageCost =
-            item.weightedCostStock > 0
-              ? item.weightedCostTotal /
-                item.weightedCostStock
-              : 0;
-
-          const categories =
-            Array.from(item.categories);
-
-          const skus =
-            Array.from(item.skus);
-
-          const storeNames =
-            Array.from(item.storeNames);
-
-          const finalItem: InventoryItem = {
-            id: item.id,
-            name: item.name,
-            sku:
-              skus.length === 1
-                ? skus[0]
-                : skus.length > 1
-                ? "Multiple"
-                : "",
-            category:
-              categories.length === 1
-                ? categories[0]
-                : categories.length > 1
-                ? "Multiple"
-                : "",
-            stock: item.stock,
-            minStock: item.minStock,
-            cost: averageCost,
-            value:
-              item.weightedCostTotal,
-            status:
-              item.stock <= 0
-                ? "out_of_stock"
-                : item.stock <= item.minStock
-                ? "low_stock"
-                : "in_stock",
-            updated: item.updated,
-            store_id:
-              item.stores.size === 1
-                ? Array.from(item.stores)[0]
-                : undefined,
-            store_name:
-              storeNames.length > 0
-                ? storeNames.join(", ")
-                : "All Stores",
-            branch_name: "",
-            store_ids: Array.from(item.stores),
-            store_names: storeNames,
-          };
-
-          return finalItem;
-        }
-      );
-    },
-    []
-  );
-
   const loadInventory = useCallback(async () => {
     try {
       setLoading(true);
       setError("");
 
-      if (!activeStoreId) {
-        setItems([]);
-        setSummary({
-          total_products: 0,
-          total_units: 0,
-          low_stock: 0,
-          out_of_stock: 0,
-          total_value: 0,
-        });
-        setLoading(false);
-        return;
+      /*
+       * IMPORTANT:
+       * Use ONE centralized inventory request instead of making one request
+       * per branch. The centralized backend already supports an optional
+       * store_id filter and joins product_stores -> products -> stores.
+       *
+       * This prevents the navigation-time race/connection problem caused by
+       * firing many inventory + average-cost requests at the same time.
+       */
+      const params = new URLSearchParams();
+
+      if (branchFilter) {
+        params.set("store_id", String(branchFilter));
       }
 
-      let selectedStoreId = activeStoreId;
-
-      if (
-        storeScope.startsWith("store:")
-      ) {
-        selectedStoreId =
-          Number(
-            storeScope.replace(
-              "store:",
-              ""
-            )
-          ) || activeStoreId;
-      }
-
-      /*
-      |--------------------------------------------------------------------------
-      | CURRENT / SPECIFIC STORE
-      |--------------------------------------------------------------------------
-      */
-
-      if (storeScope !== "all") {
-        const result =
-          await fetchInventoryForStore(
-            selectedStoreId
-          );
-
-        setItems(result.items);
-
-        const calculatedTotalValue =
-          result.items.reduce(
-            (sum, item) =>
-              sum +
-              Number(item.stock || 0) *
-                Number(item.cost || 0),
-            0
-          );
-
-        const serverSummary =
-          result.summary || {};
-
-        setSummary({
-          total_products:
-            Number(
-              serverSummary.total_products ??
-                result.items.length
-            ),
-          total_units:
-            Number(
-              serverSummary.total_units ??
-                result.items.reduce(
-                  (sum, item) =>
-                    sum +
-                    Number(
-                      item.stock || 0
-                    ),
-                  0
-                )
-            ),
-          low_stock:
-            Number(
-              serverSummary.low_stock ??
-                result.items.filter(
-                  (item) =>
-                    item.status ===
-                    "low_stock"
-                ).length
-            ),
-          out_of_stock:
-            Number(
-              serverSummary.out_of_stock ??
-                result.items.filter(
-                  (item) =>
-                    item.status ===
-                    "out_of_stock"
-                ).length
-            ),
-          total_value:
-            calculatedTotalValue,
-        });
-
-        return;
-      }
-
-      /*
-      |--------------------------------------------------------------------------
-      | ALL STORES
-      |--------------------------------------------------------------------------
-      |
-      | Load every store's inventory, then group products by normalized name.
-      | There is still only ONE row per product name.
-      |
-      */
-
-      const storeRows =
-        stores.length > 0
-          ? stores
-          : await fetchStoreList();
-
-      if (storeRows.length === 0) {
-        throw new Error(
-          "No stores were found."
-        );
-      }
-
-      const results =
-        await Promise.all(
-          storeRows.map(async (store) => {
-            const result =
-              await fetchInventoryForStore(
-                store.id,
-                false
-              );
-
-            /*
-            | API search/status are not used as the
-            | final all-store filter. They are cleared
-            | below by re-fetching without filters.
-            */
-            return {
-              storeId: store.id,
-              items: result.items,
-            };
-          })
-        );
-
-      /*
-      | When searching all stores, each store request above
-      | may already have filtered. That is still safe because
-      | grouping is based on the returned records.
-      */
-
-      let aggregated =
-        aggregateAllStoreInventory(
-          storeRows,
-          results
-        );
-
-      /*
-      |--------------------------------------------------------------------------
-      | ALL-STORE FILTERS
-      |--------------------------------------------------------------------------
-      */
-
-      const searchValue =
-        search.trim().toLowerCase();
-
-      if (searchValue) {
-        aggregated =
-          aggregated.filter((item) => {
-            return (
-              item.name
-                .toLowerCase()
-                .includes(searchValue) ||
-              item.sku
-                .toLowerCase()
-                .includes(searchValue) ||
-              item.category
-                .toLowerCase()
-                .includes(searchValue) ||
-              (item.store_name || "")
-                .toLowerCase()
-                .includes(searchValue)
-            );
-          });
+      if (search.trim()) {
+        params.set("search", search.trim());
       }
 
       if (statusFilter) {
-        aggregated =
-          aggregated.filter(
-            (item) =>
-              item.status === statusFilter
-          );
+        params.set("status", statusFilter);
       }
 
-      setItems(aggregated);
+      inventoryRequestRef.current?.abort();
+      const controller = new AbortController();
+      inventoryRequestRef.current = controller;
+
+      const response = await fetch(
+        `${API_BASE}/inventory.php${params.toString() ? `?${params.toString()}` : ""}`,
+        {
+          method: "GET",
+          headers: {
+            Accept: "application/json",
+          },
+          signal: controller.signal,
+          cache: "no-store",
+        }
+      );
+
+      const text = await response.text();
+
+      let data: any;
+      try {
+        data = JSON.parse(text);
+      } catch {
+        throw new Error(
+          `Inventory API did not return valid JSON:\n${text.substring(0, 500)}`
+        );
+      }
+
+      if (!response.ok || !data.success) {
+        throw new Error(
+          data.message ||
+            `Failed to load inventory. Server returned ${response.status}.`
+        );
+      }
+
+      const rows = Array.isArray(data.items) ? data.items : [];
+
+      const centralizedItems: InventoryItem[] = rows.map((item: any) => {
+        const stock = Number(item.stock ?? 0);
+        const minStock = Number(
+          item.minStock ?? item.low_stock_threshold ?? 0
+        );
+        const cost = Number(item.cost ?? 0);
+
+        return {
+          ...item,
+          id: Number(item.product_store_id ?? item.id ?? 0),
+          product_id: Number(item.product_id ?? 0),
+          store_id: Number(item.store_id ?? 0),
+          store_name: String(item.store_name ?? ""),
+          branch_name: String(item.branch_name ?? ""),
+          name: String(item.name ?? "Unknown Product"),
+          sku: String(item.sku ?? ""),
+          category: String(item.category ?? "Uncategorized"),
+          stock,
+          minStock,
+          cost,
+          value: stock * cost,
+          status:
+            stock <= 0
+              ? "out_of_stock"
+              : stock <= minStock
+              ? "low_stock"
+              : "in_stock",
+          updated: String(item.updated ?? "—"),
+        };
+      });
+
+      setItems(centralizedItems);
+
+      /* Prefer the backend summary; calculate from returned rows as a safe fallback. */
+      const backendSummary = data.summary || {};
+
+      const uniqueProductIds = new Set(
+        centralizedItems.map((item) => Number(item.product_id ?? item.id))
+      );
 
       setSummary({
-        total_products:
-          aggregated.length,
-        total_units:
-          aggregated.reduce(
-            (sum, item) =>
-              sum +
-              Number(item.stock || 0),
-            0
-          ),
-        low_stock:
-          aggregated.filter(
-            (item) =>
-              item.status ===
-              "low_stock"
-          ).length,
-        out_of_stock:
-          aggregated.filter(
-            (item) =>
-              item.status ===
-              "out_of_stock"
-          ).length,
-        total_value:
-          aggregated.reduce(
-            (sum, item) =>
-              sum +
-              Number(item.value || 0),
-            0
-          ),
+        total_products: Number(
+          backendSummary.total_products ?? uniqueProductIds.size
+        ),
+        total_units: Number(
+          backendSummary.total_units ??
+            centralizedItems.reduce(
+              (sum, item) => sum + Number(item.stock || 0),
+              0
+            )
+        ),
+        low_stock: Number(
+          backendSummary.low_stock ??
+            centralizedItems.filter(
+              (item) => item.status === "low_stock"
+            ).length
+        ),
+        out_of_stock: Number(
+          backendSummary.out_of_stock ??
+            centralizedItems.filter(
+              (item) => item.status === "out_of_stock"
+            ).length
+        ),
+        total_value: Number(
+          backendSummary.total_value ??
+            centralizedItems.reduce(
+              (sum, item) => sum + Number(item.value || 0),
+              0
+            )
+        ),
       });
     } catch (err) {
-      console.error(
-        "Load inventory error:",
-        err
-      );
+      if (err instanceof DOMException && err.name === "AbortError") {
+        return;
+      }
+
+      console.error("Load inventory error:", err);
 
       setItems([]);
       setSummary({
@@ -1033,16 +583,7 @@ export default function Inventory({
     } finally {
       setLoading(false);
     }
-  }, [
-    activeStoreId,
-    storeScope,
-    stores,
-    search,
-    statusFilter,
-    fetchStoreList,
-    fetchInventoryForStore,
-    aggregateAllStoreInventory,
-  ]);
+  }, [branchFilter, search, statusFilter]);
 
   /*
   |--------------------------------------------------------------------------
@@ -1062,6 +603,10 @@ export default function Inventory({
 
   useEffect(() => {
     loadInventory();
+
+    return () => {
+      inventoryRequestRef.current?.abort();
+    };
   }, [loadInventory]);
 
   /*
@@ -1087,34 +632,7 @@ export default function Inventory({
 
   useEffect(() => {
     setPage(1);
-  }, [
-    activeStoreId,
-    search,
-    statusFilter,
-    storeScope,
-  ]);
-
-  useEffect(() => {
-    if (!activeStoreId) {
-      setStoreScope("current");
-      return;
-    }
-
-    if (
-      storeScope === "current" ||
-      storeScope === "all"
-    ) {
-      return;
-    }
-
-    const selectedId = Number(
-      storeScope.replace("store:", "")
-    );
-
-    if (!Number.isInteger(selectedId) || selectedId <= 0) {
-      setStoreScope("current");
-    }
-  }, [activeStoreId, storeScope]);
+  }, [search, statusFilter, branchFilter]);
 
   /*
   |--------------------------------------------------------------------------
@@ -1126,6 +644,7 @@ export default function Inventory({
 
     setSearch("");
     setStatusFilter("");
+    setBranchFilter("");
     setPage(1);
   };
 
@@ -1229,10 +748,10 @@ export default function Inventory({
               body: JSON.stringify({
 
                 store_id:
-  activeStoreId,
+                  Number(adjustModal.store_id),
 
                 product_id:
-                  adjustModal.id,
+                  Number(adjustModal.product_id),
 
                 type:
                   adjustForm.type,
@@ -1306,7 +825,7 @@ export default function Inventory({
 
         const response =
           await fetch(
-            `${API_BASE}/inventory-history.php?store_id=${activeStoreId}&product_id=${item.id}`
+            `${API_BASE}/inventory-history.php?store_id=${item.store_id}&product_id=${item.product_id}`
           );
 
         const data =
@@ -1351,11 +870,8 @@ export default function Inventory({
 
   const exportInventory =
     () => {
-
       const headers = [
-        ...(storeScope === "all"
-          ? ["Store"]
-          : []),
+        "Branch",
         "Product",
         "SKU",
         "Category",
@@ -1369,9 +885,9 @@ export default function Inventory({
 
       const rows =
         items.map((item) => [
-          ...(storeScope === "all"
-            ? [item.store_name || "All Stores"]
-            : []),
+          item.branch_name ||
+            item.store_name ||
+            `Store #${item.store_id}`,
           item.name,
           item.sku,
           item.category,
@@ -1384,26 +900,21 @@ export default function Inventory({
         ]);
 
       const csv = [
-
         headers.join(","),
-
         ...rows.map((row) =>
           row
             .map((value) =>
-              `"${String(value)
-                .replace(/"/g, '""')}"`
+              `"${String(value).replace(/"/g, '""')}"`
             )
             .join(",")
         ),
-
       ].join("\n");
 
       const blob =
         new Blob(
           [csv],
           {
-            type:
-              "text/csv;charset=utf-8;",
+            type: "text/csv;charset=utf-8;",
           }
         );
 
@@ -1414,10 +925,7 @@ export default function Inventory({
         document.createElement("a");
 
       link.href = url;
-
-      link.download =
-        "inventory.csv";
-
+      link.download = "inventory.csv";
       link.click();
 
       URL.revokeObjectURL(url);
@@ -1448,32 +956,7 @@ export default function Inventory({
           </p>
 
           <p className="text-[10px] text-[#94A3B8] mt-1">
-            View:{" "}
-            {storeScope === "all"
-              ? "All Stores"
-              : storeScope === "current"
-              ? "Current Store"
-              : stores.find(
-                  (store) =>
-                    Number(store.id) ===
-                    Number(
-                      storeScope.replace(
-                        "store:",
-                        ""
-                      )
-                    )
-                )?.branch_name ||
-                stores.find(
-                  (store) =>
-                    Number(store.id) ===
-                    Number(
-                      storeScope.replace(
-                        "store:",
-                        ""
-                      )
-                    )
-                )?.store_name ||
-                "Selected Store"}
+            View: Centralized Inventory • All Branches
           </p>
 
         </div>
@@ -1701,31 +1184,25 @@ export default function Inventory({
           />
 
           <Select
-            value={storeScope}
+            value={branchFilter === "" ? "" : String(branchFilter)}
             onChange={(value) => {
-              setStoreScope(
-                value as InventoryStoreScope
-              );
+              setBranchFilter(value ? Number(value) : "");
               setPage(1);
               setHistoryModal(null);
               setAdjustModal(null);
             }}
             placeholder={
               storesLoading
-                ? "Loading stores..."
-                : "Select Store"
+                ? "Loading branches..."
+                : "All Branches"
             }
             options={[
               {
-                value: "current",
-                label: "Current Store",
-              },
-              {
-                value: "all",
-                label: "All Stores",
+                value: "",
+                label: "All Branches",
               },
               ...stores.map((store) => ({
-                value: `store:${store.id}`,
+                value: String(store.id),
                 label:
                   store.branch_name ||
                   store.store_name ||
@@ -1758,7 +1235,7 @@ export default function Inventory({
 
           {(search ||
             statusFilter ||
-            storeScope !== "current") && (
+            branchFilter !== "") && (
 
             <button
               onClick={clearFilters}
@@ -1774,8 +1251,8 @@ export default function Inventory({
             {items.length}{" "}
 
             {items.length === 1
-              ? "product"
-              : "products"}
+              ? "inventory row"
+              : "inventory rows"}
 
           </span>
 
@@ -1789,9 +1266,7 @@ export default function Inventory({
 
         <Table
           headers={[
-            ...(storeScope === "all"
-              ? ["Store"]
-              : []),
+            "Branch",
             "Product",
             "SKU",
             "Category",
@@ -1893,23 +1368,18 @@ export default function Inventory({
               return (
 
                 <Tr
-                  key={
-                    storeScope === "all"
-                      ? `${item.name.toLowerCase()}-${item.store_ids?.join("-") || "all"}`
-                      : item.id
-                  }
+                  key={`${item.id}-${item.store_id}`}
                 >
 
-                  {storeScope === "all" && (
-                    <Td>
-                      <div className="max-w-[190px]">
-                        <span className="text-[#475569] text-[11px]">
-                          {item.store_name ||
-                            "All Stores"}
-                        </span>
-                      </div>
-                    </Td>
-                  )}
+                  <Td>
+                    <div className="max-w-[160px]">
+                      <span className="text-[#475569] text-[11px]">
+                        {item.branch_name ||
+                          item.store_name ||
+                          `Store #${item.store_id}`}
+                      </span>
+                    </div>
+                  </Td>
 
                   {/* PRODUCT */}
 
@@ -2046,22 +1516,7 @@ export default function Inventory({
                   {/* ACTIONS */}
 
                   <Td>
-                    {storeScope === "all" ||
-                    (
-                      storeScope.startsWith("store:") &&
-                      Number(
-                        storeScope.replace(
-                          "store:",
-                          ""
-                        )
-                      ) !==
-                        Number(activeStoreId)
-                    ) ? (
-                      <span className="text-[10px] text-[#94A3B8]">
-                        View only
-                      </span>
-                    ) : (
-                      <div className="flex items-center gap-1">
+                    <div className="flex items-center gap-1">
                         <button
                           onClick={() =>
                             openHistory(item)
@@ -2079,8 +1534,7 @@ export default function Inventory({
                         >
                           Adjust
                         </button>
-                      </div>
-                    )}
+                    </div>
                   </Td>
 
                 </Tr>
@@ -2513,6 +1967,20 @@ export default function Inventory({
               </div>
 
               <div className="flex items-center gap-2 mt-3">
+
+                <span className="text-[12px] text-[#64748B]">
+                  Branch:
+                </span>
+
+                <span className="text-[12px] font-semibold text-[#0F172A]">
+                  {adjustModal.branch_name ||
+                    adjustModal.store_name ||
+                    `Store #${adjustModal.store_id}`}
+                </span>
+
+              </div>
+
+              <div className="flex items-center gap-2 mt-2">
 
                 <span className="text-[12px] text-[#64748B]">
                   Current Stock:

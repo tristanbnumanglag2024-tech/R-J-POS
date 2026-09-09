@@ -248,12 +248,6 @@ function getAuthenticatedAdminUserId(): number | null {
 
 export default function App() {
 
-  // Currently logged-in admin user ID.
-  // General Settings is centralized by this user_id only.
-  const [adminUserId, setAdminUserId] = useState<number | null>(
-    getAuthenticatedAdminUserId()
-  );
-
   // ==========================================================
   // APP MODE
   // ==========================================================
@@ -606,12 +600,9 @@ const [mode, setMode] = useState<AppMode>(() => {
 
     return (
       <AdminLogin
-        onLogin={() => {
-          // AdminLogin has already authenticated the user and saved
-          // the authenticated admin record. Read ONLY its user ID.
-          setAdminUserId(getAuthenticatedAdminUserId());
-          setMode("back-office");
-        }}
+        onLogin={() =>
+          setMode("back-office")
+        }
 
         onSwitchToPOS={() =>
           setMode("pos-login")
@@ -802,11 +793,7 @@ case "add-product":
   );
 
      case "categories":
-  return (
-    <Categories
-      activeStoreId={selectedStore?.id ?? null}
-    />
-  );
+        return <Categories />;
 
       case "inventory":
   return (
@@ -915,6 +902,7 @@ case "add-product":
       case "settings":
         return (
           <Settings
+            userId={getAuthenticatedAdminUserId()}
           />
         );
 
@@ -944,7 +932,7 @@ case "add-product":
   if (!confirmed) return;
 
   localStorage.removeItem("admin");
-  setAdminUserId(null);
+
 
   setMode("admin-login");
 }}

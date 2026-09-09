@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { createPortal } from "react-dom";
 import {
   Card,
   Badge,
@@ -13,7 +14,9 @@ import {
 
 interface ProductsProps {
   onAddProduct: () => void;
-  activeStoreId: number | null;
+  // Kept optional for parent compatibility. Products no longer uses it
+  // for store selection; this page is always centralized across all stores.
+  activeStoreId?: number | null;
 }
 
 type AverageCostMap = Record<string, number>;
@@ -26,7 +29,7 @@ interface Store {
 }
 interface Category {
   id: number;
-  store_id: number;
+  store_id?: number;
   name: string;
   description?: string;
   status: string;
@@ -38,6 +41,13 @@ interface ProductVariant {
   product_id?: number;
   option_name: string;
   option_value: string;
+}
+
+interface Supplier {
+  id: number;
+  name: string;
+  store_id?: number;
+  status?: string;
 }
 
 interface Product {
@@ -112,9 +122,7 @@ function getCategoryName(
     const storeId = Number(product.store_id);
 
     const category = categories.find(
-      (item) =>
-        Number(item.id) === categoryId &&
-        Number(item.store_id) === storeId
+      (item) => Number(item.id) === categoryId
     );
 
     if (category?.name?.trim()) {
@@ -153,6 +161,7 @@ export default function Products({
     useState<AverageCostMap>({});
 
   const [categories, setCategories] = useState<Category[]>([]);
+  const [suppliers, setSuppliers] = useState<Supplier[]>([]);
 
   /*
   |--------------------------------------------------------------------------
@@ -186,7 +195,7 @@ export default function Products({
     useState(false);
 
   const [importScope, setImportScope] =
-    useState<"current" | "all">("current");
+    useState<"all">("all");
 
   const [importFile, setImportFile] =
     useState<File | null>(null);
@@ -211,9 +220,13 @@ export default function Products({
   const [catFilter, setCatFilter] = useState("");
   const [statusFilter, setStatusFilter] = useState("");
 
-  // Main table scope: current store or every store.
+  // In-page branch selector. The topbar store selector is no longer used.
+  // "all" is the centralized All Stores view; otherwise this is a store ID.
   const [tableScope, setTableScope] =
-    useState<"current" | "all">("current");
+    useState<"all" | string>("all");
+
+  const selectedStoreId =
+    tableScope === "all" ? null : Number(tableScope);
 
   const [page, setPage] = useState(1);
 
@@ -225,6 +238,11 @@ export default function Products({
 
   const [menuId, setMenuId] =
     useState<number | null>(null);
+
+  const [menuPosition, setMenuPosition] = useState<{
+    top: number;
+    left: number;
+  } | null>(null);
 
   const [globalStatusUpdating, setGlobalStatusUpdating] =
     useState<string | null>(null);
@@ -243,6 +261,9 @@ export default function Products({
 
   const [editProduct, setEditProduct] =
     useState<Product | null>(null);
+
+  const [editMode, setEditMode] =
+    useState<"store" | "all">("store");
 
   const [savingEdit, setSavingEdit] =
     useState(false);
@@ -389,7 +410,7 @@ export default function Products({
       setLoadingCategories(true);
 
       const response = await fetch(
-        `${API_BASE}/categories/list.php?store_id=${currentStoreId}`
+        `${API_BASE}/categories/list.php`
       );
 
       const data = await response.json();
@@ -404,9 +425,7 @@ export default function Products({
       const storeCategories =
         Array.isArray(data.categories)
           ? data.categories.filter(
-              (category: Category) =>
-                Number(category.store_id) ===
-                Number(currentStoreId)
+              (category: Category) => category.status === "active"
             )
           : [];
 
@@ -420,6 +439,98 @@ export default function Products({
       setCategories([]);
     } finally {
       setLoadingCategories(false);
+    }
+  };
+
+  /*
+  |--------------------------------------------------------------------------
+  | LOAD SUPPLIERS
+  |--------------------------------------------------------------------------
+  */
+
+  const fetchSuppliers = async (currentStoreId?: number) => {
+    const parseSuppliers = (data: any): Supplier[] => {
+      const rows = Array.isArray(data?.suppliers)
+        ? data.suppliers
+        : Array.isArray(data?.data?.suppliers)
+        ? data.data.suppliers
+        : Array.isArray(data?.data)
+        ? data.data
+        : Array.isArray(data?.rows)
+        ? data.rows
+        : [];
+
+      return rows
+        .map((supplier: any) => ({
+          id: Number(supplier.id),
+          name: String(
+            supplier.name ??
+            supplier.supplier_name ??
+            supplier.company_name ??
+            `Supplier #${supplier.id}`
+          ).trim(),
+          store_id:
+            supplier.store_id !== undefined &&
+            supplier.store_id !== null &&
+            supplier.store_id !== ""
+              ? Number(supplier.store_id)
+              : undefined,
+          status: supplier.status,
+        }))
+        .filter(
+          (supplier: Supplier) =>
+            Number.isInteger(supplier.id) &&
+            supplier.id > 0 &&
+            supplier.name !== "" &&
+            String(supplier.status ?? "active").toLowerCase() !== "inactive"
+        );
+    };
+
+    try {
+      // Suppliers are a product-master field, so load the global supplier list first.
+      // This avoids restricting the Edit Product dropdown to the currently selected branch.
+      const globalResponse = await fetch(
+        `${API_BASE}/suppliers/list.php`,
+        {
+          headers: { Accept: "application/json" },
+        }
+      );
+
+      if (globalResponse.ok) {
+        const globalData = await globalResponse.json();
+        if (globalData?.success) {
+          const globalSuppliers = parseSuppliers(globalData);
+          if (globalSuppliers.length > 0) {
+            setSuppliers(globalSuppliers);
+            return;
+          }
+        }
+      }
+
+      // Compatibility fallback for an existing branch-scoped supplier endpoint.
+      if (currentStoreId && currentStoreId > 0) {
+        const fallbackResponse = await fetch(
+          `${API_BASE}/suppliers/list.php?store_id=${encodeURIComponent(
+            String(currentStoreId)
+          )}`,
+          {
+            headers: { Accept: "application/json" },
+          }
+        );
+
+        if (fallbackResponse.ok) {
+          const fallbackData = await fallbackResponse.json();
+          if (fallbackData?.success) {
+            setSuppliers(parseSuppliers(fallbackData));
+            return;
+          }
+        }
+      }
+
+      setSuppliers([]);
+    } catch (err) {
+      console.warn("Supplier fetch error:", err);
+      setSuppliers([]);
     }
   };
 
@@ -634,8 +745,8 @@ export default function Products({
   };
 
   const exportCurrentStore = () => {
-    if (!activeStoreId) {
-      setError("No store selected.");
+    if (!selectedStoreId) {
+      setError("Please select a branch first.");
       return;
     }
 
@@ -659,7 +770,7 @@ export default function Products({
     });
 
     downloadCsv(
-      `products-store-${activeStoreId}-${new Date().toISOString().slice(0, 10)}.csv`,
+      `products-store-${selectedStoreId}-${new Date().toISOString().slice(0, 10)}.csv`,
       [
         "Product",
         "SKU",
@@ -889,11 +1000,6 @@ export default function Products({
   const importProductsCsv = async () => {
     if (importLoading) return;
 
-    if (!activeStoreId) {
-      setError("No store selected.");
-      return;
-    }
-
     if (!importFile) {
       setError("Please select a CSV file first.");
       return;
@@ -1033,8 +1139,8 @@ export default function Products({
             Accept: "application/json",
           },
           body: JSON.stringify({
-            store_id: activeStoreId,
-            scope: importScope,
+            store_id: null,
+            scope: "all",
             products: uniqueRows,
           }),
         }
@@ -1108,69 +1214,94 @@ export default function Products({
     setMenuId(null);
     setViewProduct(null);
     setEditProduct(null);
+    setEditMode("store");
     setError("");
     setSuccess("");
 
-    if (!activeStoreId) {
-      setProducts([]);
-      setAverageCosts({});
-      setAllStoreProducts([]);
-      setAllStores([]);
-      setAllStoreAverageCosts({});
-      setCategories([]);
-      return;
-    }
-
+    // Always load every active store. The in-page selector controls the table.
+    setTableScope("all");
     setAllStoreProducts([]);
     setAllStores([]);
     setAllStoreAverageCosts({});
 
-    fetchProducts(activeStoreId);
-    fetchAverageCosts(activeStoreId);
-    fetchCategories(activeStoreId);
-  }, [activeStoreId]);
-
-  // Load every store only when the main table is switched to All Stores.
-  // Current Store keeps using the lightweight single-store API calls above.
-  useEffect(() => {
-    if (!activeStoreId) return;
-
-    setPage(1);
-    setMenuId(null);
-    setError("");
-    setSuccess("");
-
-    if (tableScope === "all") {
-      openAllStores();
-    }
-  }, [activeStoreId, tableScope]);
+    void openAllStores();
+    void fetchCategories(0);
+    void fetchSuppliers();
+  }, []);
 
   /*
   |--------------------------------------------------------------------------
-  | FILTER
+  | CENTRALIZED ALL-STORES TABLE
+  |--------------------------------------------------------------------------
+  |
+  | One row per product name. Existing store associations are NEVER merged
+  | into a new database row. We only calculate display values in memory.
+  |
+  | Stock:
+  |   SUM(stock) across all stores.
+  |
+  | Average Cost:
+  |   Weighted average of each store's existing average_cost using that
+  |   store's stock as the weight.
+  |
+  |   SUM(store_average_cost * store_stock) / SUM(store_stock)
+  |
+  | If every store has zero stock, we fall back to the simple average of
+  | available store average costs so the Cost column still displays.
   |--------------------------------------------------------------------------
   */
-
-  const tableProducts =
-    tableScope === "all"
-      ? allStoreProducts
-      : products;
-
-  const getDisplayAverageCost = (product: Product) => {
-    if (tableScope === "all") {
-      const storeCosts =
-        allStoreAverageCosts[Number(product.store_id)] || {};
-
-      const value = storeCosts[String(product.id)];
-      return value !== undefined
-        ? Number(value)
-        : Number(product.cost || 0);
+  const tableProducts = useMemo(() => {
+    if (tableScope !== "all") {
+      return allStoreProducts.filter(
+        (product) => Number(product.store_id) === Number(selectedStoreId)
+      );
     }
 
-    const value = averageCosts[String(product.id)];
-    return value !== undefined
-      ? Number(value)
-      : Number(product.cost || 0);
+    // All Stores: one row per product name. Only stock is summed.
+    // Cost is the stock-weighted average of the existing per-store average costs.
+    const grouped = new Map<string, Product & { _totalStock: number; _costValue: number; _costSamples: number[] }>();
+
+    for (const product of allStoreProducts) {
+      const key = product.name.trim().toLowerCase();
+      if (!key) continue;
+      const stock = Math.max(0, Number(product.stock ?? 0));
+      const storeCosts = allStoreAverageCosts[Number(product.store_id)] || {};
+      const averageCost = storeCosts[String(product.id)] !== undefined
+        ? Number(storeCosts[String(product.id)])
+        : Number(product.cost || 0);
+      const safeCost = Number.isFinite(averageCost) && averageCost >= 0 ? averageCost : 0;
+      const existing = grouped.get(key);
+
+      if (!existing) {
+        grouped.set(key, { ...product, stock, _totalStock: stock, _costValue: safeCost * stock, _costSamples: [safeCost] });
+        continue;
+      }
+
+      existing._totalStock += stock;
+      existing._costValue += safeCost * stock;
+      existing._costSamples.push(safeCost);
+      if (!existing.sku && product.sku) existing.sku = product.sku;
+      if (!existing.barcode && product.barcode) existing.barcode = product.barcode;
+      if (!existing.category_name && product.category_name) existing.category_name = product.category_name;
+      if (String(product.status).toLowerCase() === "active") existing.status = "active";
+    }
+
+    return Array.from(grouped.values()).map((product) => {
+      const totalStock = product._totalStock;
+      const averageCost = totalStock > 0
+        ? product._costValue / totalStock
+        : product._costSamples.length > 0
+        ? product._costSamples.reduce((sum, value) => sum + value, 0) / product._costSamples.length
+        : Number(product.cost || 0);
+      return { ...product, stock: totalStock, cost: Number.isFinite(averageCost) ? averageCost : 0 };
+    });
+  }, [tableScope, selectedStoreId, allStoreProducts, allStoreAverageCosts]);
+
+  const getDisplayAverageCost = (product: Product) => {
+    if (tableScope === "all") return Number(product.cost || 0);
+    const storeCosts = allStoreAverageCosts[Number(product.store_id)] || {};
+    const value = storeCosts[String(product.id)];
+    return value !== undefined ? Number(value) : Number(product.cost || 0);
   };
 
   const filtered = useMemo(() => {
@@ -1243,16 +1374,8 @@ export default function Products({
   */
 
   const refreshProducts = async () => {
-    if (!activeStoreId) return;
-
-    await Promise.all([
-      fetchProducts(activeStoreId),
-      fetchAverageCosts(activeStoreId),
-    ]);
-
-    if (tableScope === "all") {
-      await openAllStores();
-    }
+    await openAllStores();
+    await fetchCategories(0);
   };
 
   /*
@@ -1266,8 +1389,8 @@ export default function Products({
   ) => {
     setMenuId(null);
 
-    if (!activeStoreId) {
-      setError("No store selected.");
+    if (!selectedStoreId) {
+      setError("Please select a branch first.");
       return;
     }
 
@@ -1291,7 +1414,7 @@ export default function Products({
           },
           body: JSON.stringify({
             id: product.id,
-            store_id: activeStoreId,
+            store_id: selectedStoreId,
           }),
         }
       );
@@ -1341,7 +1464,7 @@ export default function Products({
   }
 
   const productId = Number(product.id);
-  const storeId = Number(activeStoreId);
+  const storeId = Number(selectedStoreId);
 
   if (!Number.isInteger(productId) || productId <= 0) {
     setError("Invalid product ID.");
@@ -1496,11 +1619,7 @@ export default function Products({
           `Product ${actionText}d across all stores successfully.`
       );
 
-      if (tableScope === "all") {
-        await openAllStores();
-      } else if (activeStoreId) {
-        await refreshProducts();
-      }
+      await openAllStores();
     } catch (err) {
       console.error(
         "Global product status error:",
@@ -1527,8 +1646,8 @@ export default function Products({
   ) => {
     setMenuId(null);
 
-    if (!activeStoreId) {
-      setError("No store selected.");
+    if (!selectedStoreId) {
+      setError("Please select a branch first.");
       return;
     }
 
@@ -1546,7 +1665,7 @@ export default function Products({
           },
           body: JSON.stringify({
             id: product.id,
-            store_id: activeStoreId,
+            store_id: selectedStoreId,
           }),
         }
       );
@@ -1585,13 +1704,30 @@ export default function Products({
   |--------------------------------------------------------------------------
   */
 
-  const openEdit = (product: Product) => {
+  const openEdit = async (product: Product) => {
     setMenuId(null);
+    setMenuPosition(null);
+    setEditMode("store");
 
     setEditProduct({
       ...product,
       variants: product.variants ?? [],
     });
+
+    await fetchSuppliers(Number(product.store_id));
+  };
+
+  const openAllStoreEdit = async (product: Product) => {
+    setMenuId(null);
+    setMenuPosition(null);
+    setEditMode("all");
+
+    setEditProduct({
+      ...product,
+      variants: product.variants ?? [],
+    });
+
+    await fetchSuppliers();
   };
 
   const handleEditChange = (
@@ -1614,6 +1750,95 @@ export default function Products({
     return;
   }
 
+  if (editMode === "all") {
+    const productId = Number(editProduct.id);
+    const name = editProduct.name.trim();
+    const sku = editProduct.sku?.trim() || null;
+    const supplierId = editProduct.supplier_id
+      ? Number(editProduct.supplier_id)
+      : null;
+    const categoryId = editProduct.category_id
+      ? Number(editProduct.category_id)
+      : null;
+
+    if (!Number.isInteger(productId) || productId <= 0) {
+      setError("Invalid product ID.");
+      return;
+    }
+    if (!name) {
+      setError("Product name is required.");
+      return;
+    }
+    if (sku !== null && !/^\d{1,8}$/.test(sku)) {
+      setError("SKU must contain 1 to 8 digits.");
+      return;
+    }
+    if (supplierId !== null && (!Number.isInteger(supplierId) || supplierId <= 0)) {
+      setError("Invalid supplier.");
+      return;
+    }
+    if (categoryId !== null && (!Number.isInteger(categoryId) || categoryId <= 0)) {
+      setError("Invalid category.");
+      return;
+    }
+
+    try {
+      setSavingEdit(true);
+      setError("");
+      setSuccess("");
+
+      const response = await fetch(
+        `${API_BASE}/products/update-all.php`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Accept: "application/json",
+          },
+          body: JSON.stringify({
+            product_id: productId,
+            name,
+            sku,
+            supplier_id: supplierId,
+            category_id: categoryId,
+          }),
+        }
+      );
+
+      const text = await response.text();
+      let data: any;
+      try {
+        data = JSON.parse(text);
+      } catch {
+        throw new Error(
+          `All-store product update API did not return valid JSON:\n${text.substring(0, 500)}`
+        );
+      }
+
+      if (!response.ok || !data.success) {
+        throw new Error(
+          data.message || "Failed to update the product across all stores."
+        );
+      }
+
+      setSuccess(
+        data.message || "Product updated across all stores successfully."
+      );
+      setEditProduct(null);
+      await refreshProducts();
+    } catch (err) {
+      console.error("All-store product update error:", err);
+      setError(
+        err instanceof Error
+          ? err.message
+          : "Failed to update the product across all stores."
+      );
+    } finally {
+      setSavingEdit(false);
+    }
+    return;
+  }
+
   if (!activeStoreId) {
     setError("No store selected.");
     return;
@@ -1626,7 +1851,7 @@ export default function Products({
   */
 
   const productId = Number(editProduct.id);
-  const storeId = Number(activeStoreId);
+  const storeId = Number(selectedStoreId);
 
   if (!Number.isInteger(productId) || productId <= 0) {
     setError("Invalid product ID.");
@@ -1641,23 +1866,11 @@ export default function Products({
 
   /*
   |--------------------------------------------------------------------------
-  | STORE PROTECTION
+  | STORE ASSOCIATION
   |--------------------------------------------------------------------------
+  | The selected store is the store-specific inventory/pricing context.
+  | The product master itself is centralized.
   */
-
-  if (Number(editProduct.store_id) !== storeId) {
-    setError(
-      "This product does not belong to the selected store."
-    );
-
-    console.error("Store mismatch:", {
-      productId,
-      productStoreId: editProduct.store_id,
-      selectedStoreId: storeId,
-    });
-
-    return;
-  }
 
   /*
   |--------------------------------------------------------------------------
@@ -1672,7 +1885,6 @@ export default function Products({
 
   const price = Number(editProduct.price);
   const cost = Number(editProduct.cost ?? 0);
-  const stock = Number(editProduct.stock ?? 0);
   const lowStockThreshold = Number(
     editProduct.low_stock_threshold ?? 0
   );
@@ -1684,11 +1896,6 @@ export default function Products({
 
   if (!Number.isFinite(cost) || cost < 0) {
     setError("Invalid cost price.");
-    return;
-  }
-
-  if (!Number.isFinite(stock) || stock < 0) {
-    setError("Invalid stock.");
     return;
   }
 
@@ -1717,14 +1924,12 @@ export default function Products({
     }
 
     const categoryExists = categories.some(
-      (category) =>
-        Number(category.id) === categoryId &&
-        Number(category.store_id) === storeId
+      (category) => Number(category.id) === categoryId
     );
 
     if (!categoryExists) {
       setError(
-        "The selected category does not belong to this store."
+        "The selected category is invalid."
       );
       return;
     }
@@ -1836,8 +2041,6 @@ export default function Products({
           Number(editProduct.track_inventory)
         ),
 
-      stock,
-
       low_stock_threshold:
         lowStockThreshold,
 
@@ -1911,45 +2114,6 @@ export default function Products({
 
   /*
   |--------------------------------------------------------------------------
-  | NO STORE
-  |--------------------------------------------------------------------------
-  */
-
-  if (!activeStoreId) {
-    return (
-      <div className="p-6 max-w-[1400px]">
-        <Card className="p-8">
-          <div className="text-center">
-            <div className="w-12 h-12 mx-auto rounded-xl bg-slate-100 flex items-center justify-center mb-3">
-              <svg
-                width="22"
-                height="22"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="1.5"
-              >
-                <path d="M3 9l2-5h14l2 5" />
-                <path d="M5 9v10h14V9" />
-                <path d="M3 9h18" />
-              </svg>
-            </div>
-
-            <h3 className="text-[15px] font-semibold text-[#0F172A]">
-              No Store Selected
-            </h3>
-
-            <p className="text-[12px] text-[#64748B] mt-1">
-              Select a store before managing products.
-            </p>
-          </div>
-        </Card>
-      </div>
-    );
-  }
-
-  /*
-  |--------------------------------------------------------------------------
   | RENDER
   |--------------------------------------------------------------------------
   */
@@ -1967,8 +2131,11 @@ export default function Products({
 
           <p className="text-[12px] text-[#64748B] mt-0.5">
             {tableScope === "all"
-              ? `${allStoreProducts.length} product records across ${allStores.length} stores`
-              : `${products.length} products in this store`}
+              ? `${tableProducts.length} products across ${allStores.length} stores`
+              : `${tableProducts.length} products in ${
+                  allStores.find((store) => Number(store.id) === Number(selectedStoreId))?.branch_name ||
+                  `Store #${selectedStoreId}`
+                }`}
           </p>
         </div>
 
@@ -2002,7 +2169,7 @@ export default function Products({
               setSuccess("");
               setImportResult(null);
               setImportFile(null);
-              setImportScope("current");
+              setImportScope("all");
               setShowImportModal(true);
             }}
             disabled={importLoading}
@@ -2077,23 +2244,26 @@ export default function Products({
           <Select
             value={tableScope}
             onChange={(value) => {
-              setTableScope(
-                value as "current" | "all"
-              );
+              setTableScope(String(value));
               setPage(1);
               setCatFilter("");
               setStatusFilter("");
-            }}
-         
+              setMenuId(null);
+              setMenuPosition(null);
+                        }}
             options={[
-              {
-                value: "current",
-                label: "Current Store",
-              },
-              {
-                value: "all",
-                label: "All Stores",
-              },
+              { value: "all", label: "All Stores" },
+              ...allStores
+                .filter((store) =>
+                  String(store.status ?? "active").toLowerCase() === "active"
+                )
+                .map((store) => ({
+                  value: String(store.id),
+                  label:
+                    store.branch_name?.trim() ||
+                    store.store_name ||
+                    `Store #${store.id}`,
+                })),
             ]}
           />
 
@@ -2158,12 +2328,10 @@ export default function Products({
 
       <Card>
 
-        {loading || (tableScope === "all" && loadingAllStores) ? (
+        {loadingAllStores ? (
           <div className="p-10 text-center">
             <p className="text-[13px] text-[#64748B]">
-              {tableScope === "all"
-                ? "Loading products from all stores..."
-                : "Loading products..."}
+              Loading products from all stores...
             </p>
           </div>
         ) : paged.length === 0 ? (
@@ -2197,42 +2365,28 @@ export default function Products({
         ) : (
           <>
             <Table
-              headers={[
-                ...(tableScope === "all" ? ["Store"] : []),
-                "Product",
-                "SKU",
-                "Barcode",
-                "Category",
-                "Price",
-                "Cost (Average)",
-                "Stock",
-                "Status",
-                "Actions",
-              ]}
+              headers={
+                tableScope === "all"
+                  ? ["Product", "SKU", "Cost (Average)", "Stock", "Status", "Actions"]
+                  : ["Branch", "Product", "SKU", "Barcode", "Category", "Price", "Cost (Average)", "Stock", "Status", "Actions"]
+              }
             >
 
               {paged.map((product) => (
 
-                <Tr key={`${product.store_id}-${product.id}`}>
-
-                  {tableScope === "all" && (
+                <Tr
+                  key={
+                    tableScope === "all"
+                      ? `all-${product.name.trim().toLowerCase()}`
+                      : `${product.store_id}-${product.id}`
+                  }
+                >
+                  {tableScope !== "all" && (
                     <Td>
-                      <div>
-                        <p className="text-[12px] font-medium text-[#0F172A]">
-                          {allStores.find(
-                            (store) => Number(store.id) === Number(product.store_id)
-                          )?.store_name || `Store #${product.store_id}`}
-                        </p>
-                        {allStores.find(
-                          (store) => Number(store.id) === Number(product.store_id)
-                        )?.branch_name && (
-                          <p className="text-[10px] text-[#94A3B8]">
-                            {allStores.find(
-                              (store) => Number(store.id) === Number(product.store_id)
-                            )?.branch_name}
-                          </p>
-                        )}
-                      </div>
+                      <span className="text-[#475569]">
+                        {allStores.find((store) => Number(store.id) === Number(product.store_id))?.branch_name ||
+                          `Store #${product.store_id}`}
+                      </span>
                     </Td>
                   )}
 
@@ -2260,17 +2414,6 @@ export default function Products({
                           {product.name}
                         </p>
 
-                        {product.variants &&
-                          product.variants.length >
-                            0 && (
-                            <p className="text-[10px] text-[#94A3B8]">
-                              {product.variants.length} variant option
-                              {product.variants.length !==
-                              1
-                                ? "s"
-                                : ""}
-                            </p>
-                          )}
                       </div>
 
                     </div>
@@ -2282,29 +2425,13 @@ export default function Products({
                     {product.sku || "—"}
                   </Td>
 
-                  {/* BARCODE */}
-
-                  <Td mono>
-                    {product.barcode || "—"}
-                  </Td>
-
-                  {/* CATEGORY */}
-
-                  <Td>
-                    <span className="text-[#475569]">
-                      {getCategoryName(product, categories)}
-                    </span>
-                  </Td>
-
-                  {/* PRICE */}
-
-                  <Td>
-                    <span className="font-semibold text-[#0F172A]">
-                      {fmt(product.price)}
-                    </span>
-                  </Td>
-
-                  {/* COST (AVERAGE: PURCHASES + TRANSFER-IN) */}
+                  {tableScope !== "all" && (
+                    <>
+                      <Td mono>{product.barcode || "—"}</Td>
+                      <Td><span className="text-[#475569]">{getCategoryName(product, categories)}</span></Td>
+                      <Td><span className="font-semibold text-[#0F172A]">{fmt(product.price)}</span></Td>
+                    </>
+                  )}
 
                   <Td>
                     <span className="text-[#64748B]">
@@ -2354,19 +2481,57 @@ export default function Products({
                   {/* ACTIONS */}
 
                   <Td>
-
-                    <div className="relative">
-
+                    <div>
                       <button
                         type="button"
-                        onClick={() =>
+                        onClick={(event) => {
+                          const rect =
+                            event.currentTarget.getBoundingClientRect();
+
+                          const menuWidth = 176;
+                          const menuHeight =
+                            tableScope === "all" ? 122 : 150;
+                          const gap = 4;
+
+                          let top = rect.bottom + gap;
+
+                          // If the menu would go below the viewport,
+                          // open it upward instead.
+                          if (
+                            top + menuHeight >
+                            window.innerHeight - 8
+                          ) {
+                            top =
+                              rect.top -
+                              menuHeight -
+                              gap;
+                          }
+
+                          let left =
+                            rect.right -
+                            menuWidth;
+
+                          left = Math.max(
+                            8,
+                            Math.min(
+                              left,
+                              window.innerWidth -
+                                menuWidth -
+                                8
+                            )
+                          );
+
+                          setMenuPosition({
+                            top,
+                            left,
+                          });
+
                           setMenuId(
-                            menuId ===
-                              product.id
+                            menuId === product.id
                               ? null
                               : product.id
-                          )
-                        }
+                          );
+                        }}
                         className="w-7 h-7 rounded-lg hover:bg-[#F1F5F9] flex items-center justify-center transition-colors"
                       >
                         <svg
@@ -2376,99 +2541,118 @@ export default function Products({
                           fill="currentColor"
                           className="text-[#64748B]"
                         >
-                          <circle
-                            cx="12"
-                            cy="5"
-                            r="1.5"
-                          />
-                          <circle
-                            cx="12"
-                            cy="12"
-                            r="1.5"
-                          />
-                          <circle
-                            cx="12"
-                            cy="19"
-                            r="1.5"
-                          />
+                          <circle cx="12" cy="5" r="1.5" />
+                          <circle cx="12" cy="12" r="1.5" />
+                          <circle cx="12" cy="19" r="1.5" />
                         </svg>
                       </button>
 
-                      {menuId ===
-                        product.id && (
-
-                        <div className="absolute right-0 top-8 w-44 bg-white rounded-xl border border-[#E2E8F0] shadow-xl z-20 py-1 overflow-hidden">
-
-                          <button
-                            type="button"
-                            onClick={() => {
-                              setMenuId(null);
-                              setViewProduct(product);
+                      {menuId === product.id &&
+                        menuPosition &&
+                        createPortal(
+                          <div
+                            className="fixed w-44 bg-white rounded-xl border border-[#E2E8F0] shadow-2xl z-[99999] py-1 overflow-hidden"
+                            style={{
+                              top: `${menuPosition.top}px`,
+                              left: `${menuPosition.left}px`,
                             }}
-                            className="w-full flex items-center gap-2.5 px-3 py-2 text-[13px] text-[#374151] hover:bg-[#F8FAFC]"
                           >
-                            View
-                          </button>
-
-                          {tableScope === "all" ? (
                             <button
                               type="button"
-                              disabled={globalStatusUpdating === product.name.trim().toLowerCase()}
-                              onClick={() =>
-                                handleToggleStatusAllStores(product)
-                              }
-                              className="w-full flex items-center gap-2.5 px-3 py-2 text-[13px] text-[#374151] hover:bg-[#F8FAFC] disabled:opacity-50"
+                              onClick={() => {
+                                setMenuId(null);
+                                setMenuPosition(null);
+                                setViewProduct(product);
+                              }}
+                              className="w-full flex items-center gap-2.5 px-3 py-2 text-[13px] text-[#374151] hover:bg-[#F8FAFC]"
                             >
-                              {globalStatusUpdating === product.name.trim().toLowerCase()
-                                ? "Updating..."
-                                : product.status === "active"
-                                ? "Disable All Stores"
-                                : "Enable All Stores"}
+                              View
                             </button>
-                          ) : (
-                            <>
-                              <button
-                                type="button"
-                                onClick={() => openEdit(product)}
-                                className="w-full flex items-center gap-2.5 px-3 py-2 text-[13px] text-[#374151] hover:bg-[#F8FAFC]"
-                              >
-                                Edit
-                              </button>
 
-                              <button
-                                type="button"
-                                onClick={() => handleDuplicate(product)}
-                                className="w-full flex items-center gap-2.5 px-3 py-2 text-[13px] text-[#374151] hover:bg-[#F8FAFC]"
-                              >
-                                Duplicate
-                              </button>
-
-                              <button
-                                type="button"
-                                onClick={() => handleToggleStatus(product)}
-                                className="w-full flex items-center gap-2.5 px-3 py-2 text-[13px] text-[#374151] hover:bg-[#F8FAFC]"
-                              >
-                                {product.status === "active" ? "Disable" : "Enable"}
-                              </button>
-
-                              <div className="border-t border-[#F1F5F9] mt-1 pt-1">
+                            {tableScope === "all" ? (
+                              <>
                                 <button
                                   type="button"
-                                  onClick={() => handleDelete(product)}
-                                  className="w-full flex items-center gap-2.5 px-3 py-2 text-[13px] text-red-500 hover:bg-red-50"
+                                  onClick={() => {
+                                    setMenuId(null);
+                                    setMenuPosition(null);
+                                    openAllStoreEdit(product);
+                                  }}
+                                  className="w-full text-left px-3 py-2 text-[13px] text-[#374151] hover:bg-[#F8FAFC]"
                                 >
-                                  Delete
+                                  Edit All Stores
                                 </button>
-                              </div>
-                            </>
-                          )}
 
-                        </div>
+                                <button
+                                  type="button"
+                                  disabled={
+                                    globalStatusUpdating ===
+                                    product.name
+                                      .trim()
+                                      .toLowerCase()
+                                  }
+                                  onClick={() => {
+                                  setMenuId(null);
+                                  setMenuPosition(null);
+                                  handleToggleStatusAllStores(product);
+                                }}
+                                className="w-full flex items-center gap-2.5 px-3 py-2 text-[13px] text-[#374151] hover:bg-[#F8FAFC] disabled:opacity-50"
+                              >
+                                {globalStatusUpdating ===
+                                product.name
+                                  .trim()
+                                  .toLowerCase()
+                                  ? "Updating..."
+                                  : product.status === "active"
+                                  ? "Disable All Stores"
+                                  : "Enable All Stores"}
+                                </button>
+                              </>
+                            ) : (
+                              <>
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setMenuId(null);
+                                    setMenuPosition(null);
+                                    openEdit(product);
+                                  }}
+                                  className="w-full text-left px-3 py-2 text-[13px] text-[#374151] hover:bg-[#F8FAFC]"
+                                >
+                                  Edit
+                                </button>
 
-                      )}
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setMenuId(null);
+                                    setMenuPosition(null);
+                                    handleDuplicate(product);
+                                  }}
+                                  className="w-full text-left px-3 py-2 text-[13px] text-[#374151] hover:bg-[#F8FAFC]"
+                                >
+                                  Duplicate
+                                </button>
 
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setMenuId(null);
+                                    setMenuPosition(null);
+                                    handleToggleStatus(product);
+                                  }}
+                                  className="w-full text-left px-3 py-2 text-[13px] text-[#374151] hover:bg-[#F8FAFC]"
+                                >
+                                  {product.status === "active"
+                                    ? "Disable"
+                                    : "Enable"}
+                                </button>
+                              </>
+                            )}
+                          </div>,
+                          document.body
+                        )}
                     </div>
-
                   </Td>
 
                 </Tr>
@@ -2715,42 +2899,13 @@ export default function Products({
                   Import Scope
                 </p>
 
-                <div className="grid grid-cols-2 gap-2">
-                  <button
-                    type="button"
-                    disabled={importLoading}
-                    onClick={() => setImportScope("current")}
-                    className={`rounded-xl border p-4 text-left transition-colors ${
-                      importScope === "current"
-                        ? "border-[#4F46E5] bg-[#EEF2FF]"
-                        : "border-[#E2E8F0] hover:bg-[#F8FAFC]"
-                    }`}
-                  >
-                    <p className="text-[13px] font-semibold text-[#0F172A]">
-                      Current Store
-                    </p>
-                    <p className="text-[10px] text-[#64748B] mt-1">
-                      Import into the currently selected store.
-                    </p>
-                  </button>
-
-                  <button
-                    type="button"
-                    disabled={importLoading}
-                    onClick={() => setImportScope("all")}
-                    className={`rounded-xl border p-4 text-left transition-colors ${
-                      importScope === "all"
-                        ? "border-[#4F46E5] bg-[#EEF2FF]"
-                        : "border-[#E2E8F0] hover:bg-[#F8FAFC]"
-                    }`}
-                  >
-                    <p className="text-[13px] font-semibold text-[#0F172A]">
-                      All Stores
-                    </p>
-                    <p className="text-[10px] text-[#64748B] mt-1">
-                      Create missing products in active stores only.
-                    </p>
-                  </button>
+                <div className="rounded-xl border border-[#C7D2FE] bg-[#EEF2FF] p-4">
+                  <p className="text-[13px] font-semibold text-[#4F46E5]">
+                    All Stores
+                  </p>
+                  <p className="text-[10px] text-[#64748B] mt-1">
+                    Import the centralized product catalog across all active stores.
+                  </p>
                 </div>
               </div>
 
@@ -2817,7 +2972,7 @@ export default function Products({
                   Export Products
                 </h3>
                 <p className="text-[11px] text-[#64748B] mt-0.5">
-                  Choose which stores to include in the CSV export.
+                  Export the centralized product catalog from all stores.
                 </p>
               </div>
 
@@ -2832,20 +2987,6 @@ export default function Products({
             </div>
 
             <div className="p-5 space-y-3">
-              <button
-                type="button"
-                onClick={exportCurrentStore}
-                disabled={exportLoading}
-                className="w-full text-left rounded-xl border border-[#E2E8F0] p-4 hover:border-[#C7D2FE] hover:bg-[#F8FAFC] transition-colors disabled:opacity-50"
-              >
-                <p className="text-[13px] font-semibold text-[#0F172A]">
-                  Current Store Only
-                </p>
-                <p className="text-[11px] text-[#64748B] mt-1">
-                  Export products from the currently selected store.
-                </p>
-              </button>
-
               <button
                 type="button"
                 onClick={exportAllStores}
@@ -2890,11 +3031,13 @@ export default function Products({
 
               <div>
                 <h3 className="text-[15px] font-bold text-[#0F172A]">
-                  Edit Product
+                  {editMode === "all" ? "Edit Product — All Stores" : "Edit Product"}
                 </h3>
 
                 <p className="text-[11px] text-[#64748B]">
-                  Product #{editProduct.id}
+                  {editMode === "all"
+                    ? "Changes apply to the centralized product across all stores."
+                    : `Product #${editProduct.id}`}
                 </p>
               </div>
 
@@ -2913,206 +3056,215 @@ export default function Products({
 
             <div className="p-5 space-y-4">
 
-              <EditInput
-                label="Product Name"
-                value={
-                  editProduct.name
-                }
-                onChange={(value) =>
-                  handleEditChange(
-                    "name",
-                    value
-                  )
-                }
-              />
+              {editMode === "all" ? (
+                <>
+                  <EditInput
+                    label="Product Name"
+                    value={editProduct.name}
+                    onChange={(value) =>
+                      handleEditChange("name", value)
+                    }
+                  />
 
-              <div className="grid grid-cols-2 gap-3">
+                  <EditInput
+                    label="SKU"
+                    value={editProduct.sku || ""}
+                    onChange={(value) =>
+                      handleEditChange("sku", value)
+                    }
+                  />
 
-                <EditInput
-                  label="SKU"
-                  value={
-                    editProduct.sku ||
-                    ""
-                  }
-                  onChange={(value) =>
-                    handleEditChange(
-                      "sku",
-                      value
-                    )
-                  }
-                />
-
-                <EditInput
-                  label="Barcode"
-                  value={
-                    editProduct.barcode ||
-                    ""
-                  }
-                  onChange={(value) =>
-                    handleEditChange(
-                      "barcode",
-                      value
-                    )
-                  }
-                />
-
-              </div>
-
-              <Select
-                label="Category"
-                value={
-                  editProduct.category_id
-                    ? String(
-                        editProduct.category_id
+                  <Select
+                    label="Supplier"
+                    value={
+                      editProduct.supplier_id
+                        ? String(editProduct.supplier_id)
+                        : ""
+                    }
+                    onChange={(value) =>
+                      handleEditChange(
+                        "supplier_id",
+                        value ? Number(value) : 0
                       )
-                    : ""
-                }
-                onChange={(value) =>
-                  handleEditChange(
-                    "category_id",
-                    Number(value)
-                  )
-                }
-                placeholder="Select category"
-                options={categories.map(
-                  (category) => ({
-                    value: String(
-                      category.id
-                    ),
-                    label:
-                      category.name,
-                  })
-                )}
-              />
+                    }
+                    placeholder={
+                      suppliers.length > 0
+                        ? "Select supplier"
+                        : "No suppliers available"
+                    }
+                    options={suppliers.map((supplier) => ({
+                      value: String(supplier.id),
+                      label: supplier.name,
+                    }))}
+                  />
 
-              <div className="grid grid-cols-2 gap-3">
+                  <Select
+                    label="Category"
+                    value={
+                      editProduct.category_id
+                        ? String(editProduct.category_id)
+                        : ""
+                    }
+                    onChange={(value) =>
+                      handleEditChange(
+                        "category_id",
+                        value ? Number(value) : 0
+                      )
+                    }
+                    placeholder="Select category"
+                    options={categories.map((category) => ({
+                      value: String(category.id),
+                      label: category.name,
+                    }))}
+                  />
+                </>
+              ) : (
+                <>
+                  <EditInput
+                    label="Product Name"
+                    value={editProduct.name}
+                    onChange={(value) =>
+                      handleEditChange("name", value)
+                    }
+                  />
 
-                <EditInput
-                  label="Selling Price"
-                  type="number"
-                  value={String(
-                    editProduct.price
-                  )}
-                  onChange={(value) =>
-                    handleEditChange(
-                      "price",
-                      Number(value)
-                    )
-                  }
-                />
-
-                <EditInput
-                  label="Cost"
-                  type="number"
-                  value={String(
-                    editProduct.cost
-                  )}
-                  onChange={(value) =>
-                    handleEditChange(
-                      "cost",
-                      Number(value)
-                    )
-                  }
-                />
-
-                <EditInput
-                  label="Stock"
-                  type="number"
-                  value={String(
-                    editProduct.stock
-                  )}
-                  onChange={(value) =>
-                    handleEditChange(
-                      "stock",
-                      Number(value)
-                    )
-                  }
-                />
-
-                <EditInput
-                  label="Low Stock Threshold"
-                  type="number"
-                  value={String(
-                    editProduct.low_stock_threshold
-                  )}
-                  onChange={(value) =>
-                    handleEditChange(
-                      "low_stock_threshold",
-                      Number(value)
-                    )
-                  }
-                />
-
-              </div>
-
-              <div>
-
-                <label className="text-[12px] font-medium text-[#374151] block mb-1">
-                  Description
-                </label>
-
-                <textarea
-                  value={
-                    editProduct.description ||
-                    ""
-                  }
-                  onChange={(e) =>
-                    handleEditChange(
-                      "description",
-                      e.target.value
-                    )
-                  }
-                  rows={4}
-                  className="w-full px-3 py-2 text-[13px] rounded-lg border border-[#E2E8F0] focus:outline-none focus:border-indigo-500 resize-none"
-                />
-
-              </div>
-
-              <div>
-
-                <label className="text-[12px] font-medium text-[#374151] block mb-2">
-                  Status
-                </label>
-
-                <div className="flex gap-4">
-
-                  <label className="flex items-center gap-2 text-[13px]">
-                    <input
-                      type="radio"
-                      checked={
-                        editProduct.status ===
-                        "active"
+                  <div className="grid grid-cols-2 gap-3">
+                    <EditInput
+                      label="SKU"
+                      value={editProduct.sku || ""}
+                      onChange={(value) =>
+                        handleEditChange("sku", value)
                       }
-                      onChange={() =>
+                    />
+
+                    <EditInput
+                      label="Barcode"
+                      value={editProduct.barcode || ""}
+                      onChange={(value) =>
+                        handleEditChange("barcode", value)
+                      }
+                    />
+                  </div>
+
+                  <Select
+                    label="Supplier"
+                    value={
+                      editProduct.supplier_id
+                        ? String(editProduct.supplier_id)
+                        : ""
+                    }
+                    onChange={(value) =>
+                      handleEditChange(
+                        "supplier_id",
+                        value ? Number(value) : 0
+                      )
+                    }
+                    placeholder={
+                      suppliers.length > 0
+                        ? "Select supplier"
+                        : "No suppliers available"
+                    }
+                    options={suppliers.map((supplier) => ({
+                      value: String(supplier.id),
+                      label: supplier.name,
+                    }))}
+                  />
+
+                  <Select
+                    label="Category"
+                    value={
+                      editProduct.category_id
+                        ? String(editProduct.category_id)
+                        : ""
+                    }
+                    onChange={(value) =>
+                      handleEditChange(
+                        "category_id",
+                        value ? Number(value) : 0
+                      )
+                    }
+                    placeholder="Select category"
+                    options={categories.map((category) => ({
+                      value: String(category.id),
+                      label: category.name,
+                    }))}
+                  />
+
+                  <div className="grid grid-cols-2 gap-3">
+                    <EditInput
+                      label="Selling Price"
+                      type="number"
+                      value={String(editProduct.price)}
+                      onChange={(value) =>
+                        handleEditChange("price", Number(value))
+                      }
+                    />
+
+                    <EditInput
+                      label="Cost"
+                      type="number"
+                      value={String(editProduct.cost)}
+                      onChange={(value) =>
+                        handleEditChange("cost", Number(value))
+                      }
+                    />
+
+                    <EditInput
+                      label="Low Stock Threshold"
+                      type="number"
+                      value={String(editProduct.low_stock_threshold)}
+                      onChange={(value) =>
                         handleEditChange(
-                          "status",
-                          "active"
+                          "low_stock_threshold",
+                          Number(value)
                         )
                       }
                     />
-                    Active
-                  </label>
+                  </div>
 
-                  <label className="flex items-center gap-2 text-[13px]">
-                    <input
-                      type="radio"
-                      checked={
-                        editProduct.status ===
-                        "inactive"
+                  <div>
+                    <label className="text-[12px] font-medium text-[#374151] block mb-1">
+                      Description
+                    </label>
+                    <textarea
+                      value={editProduct.description || ""}
+                      onChange={(e) =>
+                        handleEditChange("description", e.target.value)
                       }
-                      onChange={() =>
-                        handleEditChange(
-                          "status",
-                          "inactive"
-                        )
-                      }
+                      rows={4}
+                      className="w-full px-3 py-2 text-[13px] rounded-lg border border-[#E2E8F0] focus:outline-none focus:border-indigo-500 resize-none"
                     />
-                    Inactive
-                  </label>
+                  </div>
 
-                </div>
-
-              </div>
+                  <div>
+                    <label className="text-[12px] font-medium text-[#374151] block mb-2">
+                      Status
+                    </label>
+                    <div className="flex gap-4">
+                      <label className="flex items-center gap-2 text-[13px]">
+                        <input
+                          type="radio"
+                          checked={editProduct.status === "active"}
+                          onChange={() =>
+                            handleEditChange("status", "active")
+                          }
+                        />
+                        Active
+                      </label>
+                      <label className="flex items-center gap-2 text-[13px]">
+                        <input
+                          type="radio"
+                          checked={editProduct.status === "inactive"}
+                          onChange={() =>
+                            handleEditChange("status", "inactive")
+                          }
+                        />
+                        Inactive
+                      </label>
+                    </div>
+                  </div>
+                </>
+              )}
 
             </div>
 

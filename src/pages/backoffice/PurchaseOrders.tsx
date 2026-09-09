@@ -26,9 +26,16 @@ const API_BASE = "https://sakuracareapi.site/rhea-pos-api";
 // TYPES
 // ============================================================
 
+type Store = {
+  id: number;
+  store_name: string;
+  branch_name?: string | null;
+  status?: string;
+};
+
 type Supplier = {
   id: number;
-  store_id: number;
+  store_id?: number | null;
   name: string;
   company_name?: string | null;
   contact_person?: string | null;
@@ -132,6 +139,7 @@ type POFormItem = {
 };
 
 type POForm = {
+  store_id: number | null;
   supplier_id: number | null;
 
   expected_date: string;
@@ -297,6 +305,20 @@ export default function PurchaseOrders({
   const [orders, setOrders] =
     useState<PurchaseOrder[]>([]);
 
+  const [stores, setStores] =
+    useState<Store[]>([]);
+
+  const [loadingStores, setLoadingStores] =
+    useState(false);
+
+  // Store used by the Purchase Orders page/table.
+  // This replaces the dependency on the removed TopBar store selector.
+  const [selectedStoreId, setSelectedStoreId] =
+    useState<number | null>(activeStoreId ?? null);
+
+  // When a selected store has no POs, the page can fall back to All Stores
+  // so existing centralized purchase orders are still visible.
+
   const [suppliers, setSuppliers] =
     useState<Supplier[]>([]);
 
@@ -391,6 +413,7 @@ export default function PurchaseOrders({
 
   const [form, setForm] =
     useState<POForm>({
+      store_id: selectedStoreId ?? null,
       supplier_id: null,
       expected_date: "",
       notes: "",
@@ -424,11 +447,90 @@ export default function PurchaseOrders({
     useState<StatsPeriod>("all");
 
   // ==========================================================
+  // LOAD STORES
+  // ==========================================================
+
+  const loadStores = async () => {
+    try {
+      setLoadingStores(true);
+
+      const response = await fetch(
+        `${API_BASE}/stores/list.php`,
+        {
+          method: "GET",
+          headers: {
+            Accept: "application/json",
+          },
+        }
+      );
+
+      const data = await response.json();
+
+      if (!response.ok || !data.success) {
+        throw new Error(
+          data.message || "Failed to load stores."
+        );
+      }
+
+      const rows = Array.isArray(data.stores)
+        ? data.stores
+        : [];
+
+      const normalizedStores = rows
+        .filter(
+          (store: any) =>
+            !store.status || store.status === "active"
+        )
+        .map((store: any) => ({
+          id: Number(store.id),
+          store_name: String(
+            store.store_name ?? store.name ?? "Store"
+          ),
+          branch_name:
+            store.branch_name ?? null,
+          status: store.status ?? "active",
+        }))
+        .filter((store: Store) => Number.isInteger(store.id) && store.id > 0);
+
+      setStores(normalizedStores);
+
+      // When TopBar is removed, automatically select the business default
+      // store (or the first active store) so the table still loads data.
+      setSelectedStoreId((current) => {
+        if (current && normalizedStores.some((store: Store) => store.id === current)) {
+          return current;
+        }
+
+        const defaultStore = rows.find(
+          (store: any) =>
+            Number(store.id) > 0 &&
+            (!store.status || store.status === "active") &&
+            (Number(store.is_default) === 1 || store.is_default === true)
+        );
+
+        return defaultStore
+          ? Number(defaultStore.id)
+          : normalizedStores[0]?.id ?? null;
+      });
+    } catch (err) {
+      console.error("Load stores error:", err);
+      setStores([]);
+      setError(
+        err instanceof Error
+          ? err.message
+          : "Unable to load stores."
+      );
+    } finally {
+      setLoadingStores(false);
+    }
+  };
+
+  // ==========================================================
   // LOAD PURCHASE ORDERS
   // ==========================================================
 
   const loadOrders = async (
-    storeId: number
+    storeId: number | null
   ) => {
     try {
       setLoadingOrders(true);
@@ -451,9 +553,11 @@ export default function PurchaseOrders({
 
       while (true) {
         const url =
-          `${API_BASE}/purchase_orders/list.php?store_id=${encodeURIComponent(
+          `${API_BASE}/purchase_orders/list.php${
             storeId
-          )}&page=${currentPage}&limit=${pageSize}`;
+              ? `?store_id=${encodeURIComponent(storeId)}&page=${currentPage}&limit=${pageSize}`
+              : `?page=${currentPage}&limit=${pageSize}`
+          }`;
 
         console.log(
           "Loading Purchase Orders:",
@@ -554,7 +658,7 @@ ${text.substring(
             id: Number(order.id),
 
             store_id: Number(
-              order.store_id ?? storeId
+              order.store_id ?? 0
             ),
 
             supplier_id: Number(
@@ -674,6 +778,8 @@ ${text.substring(
           };
         });
 
+      // IMPORTANT: never fall back to All Stores automatically.
+      // The selected store must always control the Purchase Orders table.
       setOrders(normalized);
     } catch (err) {
       console.error(
@@ -705,7 +811,7 @@ ${text.substring(
 
       const response =
         await fetch(
-          `${API_BASE}/suppliers/list.php?store_id=${storeId}`,
+          `${API_BASE}/suppliers/list.php`,
           {
             method: "GET",
             headers: {
@@ -739,13 +845,6 @@ ${text.substring(
         rows
           .filter(
             (supplier: any) =>
-              Number(
-                supplier.store_id
-              ) ===
-              Number(storeId)
-          )
-          .filter(
-            (supplier: any) =>
               !supplier.status ||
               supplier.status ===
                 "active"
@@ -758,9 +857,15 @@ ${text.substring(
                 supplier.id
               ),
 
-              store_id: Number(
-                supplier.store_id
-              ),
+              store_id:
+                supplier.store_id !==
+                  null &&
+                supplier.store_id !==
+                  undefined
+                  ? Number(
+                      supplier.store_id
+                    )
+                  : 0,
 
               name:
                 supplier.name ||
@@ -921,6 +1026,19 @@ ${text.substring(
   // ==========================================================
 
   useEffect(() => {
+    loadStores();
+  }, []);
+
+  // Keep the page store selection aligned with the old TopBar selection
+  // when a TopBar value is still supplied.
+  useEffect(() => {
+    if (activeStoreId) {
+      setSelectedStoreId(activeStoreId);
+    }
+  }, [activeStoreId]);
+
+  // Load the table and form data for the store selected on this page.
+  useEffect(() => {
     setOrders([]);
     setSuppliers([]);
     setProducts([]);
@@ -928,20 +1046,27 @@ ${text.substring(
     setSearch("");
     setStatusFilter("");
     setPage(1);
-
     setDetail(null);
-
     setError("");
     setSuccess("");
 
-    if (!activeStoreId) {
+    loadOrders(selectedStoreId);
+
+    if (selectedStoreId) {
+      loadSuppliers(selectedStoreId);
+      loadProducts(selectedStoreId);
+    }
+  }, [selectedStoreId]);
+
+  // Load products for the store selected inside the Create PO form.
+  // Product availability and stock are store-specific.
+  useEffect(() => {
+    if (!showCreate || !form.store_id) {
       return;
     }
 
-    loadOrders(activeStoreId);
-    loadSuppliers(activeStoreId);
-    loadProducts(activeStoreId);
-  }, [activeStoreId]);
+    loadProducts(form.store_id);
+  }, [showCreate, form.store_id]);
 
   // ==========================================================
   // FILTERED ORDERS
@@ -1185,17 +1310,17 @@ ${text.substring(
   // ==========================================================
 
   const supplierProducts = useMemo(() => {
-    if (!activeStoreId || !form.supplier_id) {
+    if (!form.store_id || !form.supplier_id) {
       return [];
     }
 
     return products.filter(
       (product) =>
-        Number(product.store_id) === Number(activeStoreId) &&
+        Number(product.store_id) === Number(form.store_id) &&
         Number(product.supplier_id ?? 0) === Number(form.supplier_id) &&
         (!product.status || product.status === "active")
     );
-  }, [products, activeStoreId, form.supplier_id]);
+  }, [products, form.store_id, form.supplier_id]);
 
   // ==========================================================
   // OPEN CREATE
@@ -1203,6 +1328,7 @@ ${text.substring(
 
   const openCreate = () => {
     setForm({
+      store_id: selectedStoreId ?? null,
       supplier_id: null,
       expected_date: "",
       notes: "",
@@ -1229,6 +1355,7 @@ ${text.substring(
     setShowAutofillMenu(false);
 
     setForm({
+      store_id: selectedStoreId ?? null,
       supplier_id: null,
       expected_date: "",
       notes: "",
@@ -1289,7 +1416,7 @@ ${text.substring(
             products.find(
               (p) =>
                 Number(p.id) === Number(value) &&
-                Number(p.store_id) === Number(activeStoreId) &&
+                Number(p.store_id) === Number(previous.store_id) &&
                 Number(p.supplier_id ?? 0) === Number(previous.supplier_id) &&
                 (!p.status || p.status === "active")
             );
@@ -1514,7 +1641,7 @@ ${text.substring(
 
   const createPurchaseOrder =
     async () => {
-      if (!activeStoreId) {
+      if (!form.store_id) {
         setError(
           "Please select a store first."
         );
@@ -1627,7 +1754,7 @@ ${text.substring(
 
       const payload = {
         store_id:
-          activeStoreId,
+          form.store_id,
 
         supplier_id:
           form.supplier_id,
@@ -1704,6 +1831,7 @@ ${text.substring(
         setShowCreate(false);
 
         setForm({
+          store_id: selectedStoreId ?? form.store_id ?? null,
           supplier_id: null,
           expected_date: "",
           notes: "",
@@ -1713,7 +1841,7 @@ ${text.substring(
         });
 
         await loadOrders(
-          activeStoreId
+          form.store_id ?? null
         );
       } catch (err) {
         console.error(
@@ -1892,7 +2020,7 @@ ${text.substring(
   // ==========================================================
 
   const cancelPurchaseOrder = async () => {
-    if (!activeStoreId || !detail) {
+    if (!detail) {
       return;
     }
 
@@ -1926,7 +2054,7 @@ ${text.substring(
           },
           body: JSON.stringify({
             purchase_order_id: detail.id,
-            store_id: activeStoreId,
+            store_id: Number(detail.store_id),
           }),
         }
       );
@@ -1964,7 +2092,7 @@ ${text.substring(
           "Purchase order cancelled successfully."
       );
 
-      await loadOrders(activeStoreId);
+      await loadOrders(Number(detail.store_id));
     } catch (err) {
       console.error(
         "Cancel PO error:",
@@ -2066,14 +2194,6 @@ ${text.substring(
 
   const processPayment =
     async () => {
-      if (!activeStoreId) {
-        setError(
-          "Please select a store first."
-        );
-
-        return;
-      }
-
       if (!paymentOrder) {
         return;
       }
@@ -2165,7 +2285,7 @@ ${text.substring(
                     paymentOrder.id,
 
                   store_id:
-                    activeStoreId,
+                    Number(paymentOrder.store_id),
 
                   amount: Number(
                     amount.toFixed(
@@ -2207,7 +2327,7 @@ ${text.substring(
         setPaymentAmount("");
 
         await loadOrders(
-          activeStoreId
+          Number(paymentOrder.store_id)
         );
 
         if (
@@ -2664,14 +2784,6 @@ ${text.substring(
 
   const processReceive =
     async () => {
-      if (!activeStoreId) {
-        setError(
-          "Please select a store first."
-        );
-
-        return;
-      }
-
       if (!receiveOrder) {
         return;
       }
@@ -2780,7 +2892,7 @@ ${text.substring(
             receiveOrder.id,
 
           store_id:
-            activeStoreId,
+            Number(receiveOrder.store_id),
 
           receive_type:
             isFullReceive
@@ -2872,7 +2984,7 @@ ${text.substring(
         setReceiveItems([]);
 
         await loadOrders(
-          activeStoreId
+          Number(receiveOrder.store_id)
         );
 
         if (
@@ -2938,7 +3050,7 @@ ${text.substring(
         <Button
           variant="primary"
           size="sm"
-          disabled={!activeStoreId}
+          disabled={loadingStores || stores.length === 0}
           onClick={openCreate}
           icon={
             <svg
@@ -2993,15 +3105,15 @@ ${text.substring(
           NO STORE
       ======================================================= */}
 
-      {!activeStoreId && (
+      {!loadingStores && stores.length === 0 && (
         <Card className="p-8">
           <div className="text-center">
             <p className="text-[13px] font-semibold text-[#0F172A]">
-              No store selected
+              No active stores available
             </p>
 
             <p className="text-[12px] text-[#64748B] mt-1">
-              Select a store before managing purchase orders.
+              Add an active store before managing purchase orders.
             </p>
           </div>
         </Card>
@@ -3011,7 +3123,7 @@ ${text.substring(
           STATISTICS
       ======================================================= */}
 
-      {activeStoreId && (
+      {(
         <>
           <div className="flex items-center justify-between gap-3">
             <div>
@@ -3114,9 +3226,47 @@ ${text.substring(
           FILTERS
       ======================================================= */}
 
-      {activeStoreId && (
+      {(
         <Card className="p-4">
           <div className="flex flex-wrap items-center gap-3">
+            <div className="flex items-center gap-2">
+              <label className="text-[11px] font-medium text-[#64748B] whitespace-nowrap">
+                Store / Branch
+              </label>
+              <select
+                value={selectedStoreId ?? ""}
+                onChange={(event) => {
+                  const value = event.target.value;
+                  if (!value) return;
+
+                  const nextStoreId = Number(value);
+                  if (!Number.isInteger(nextStoreId) || nextStoreId <= 0) {
+                    return;
+                  }
+
+                  setSelectedStoreId(nextStoreId);
+                  setForm((previous) => ({
+                    ...previous,
+                    store_id: nextStoreId,
+                    supplier_id: null,
+                    items: [emptyPOItem()],
+                  }));
+                  setShowAutofillMenu(false);
+                }}
+                disabled={loadingStores || saving || receiving}
+                className="h-9 px-3 text-[12px] rounded-lg border border-[#E2E8F0] bg-white focus:outline-none focus:border-[#4F46E5]"
+              >
+                <option value="" disabled>
+                  {loadingStores ? "Loading stores..." : "Select Store / Branch"}
+                </option>
+                {stores.map((store) => (
+                  <option key={store.id} value={store.id}>
+                    {store.store_name}
+                    {store.branch_name ? ` — ${store.branch_name}` : ""}
+                  </option>
+                ))}
+              </select>
+            </div>
 
             <SearchBar
               value={search}
@@ -3189,7 +3339,7 @@ ${text.substring(
           TABLE
       ======================================================= */}
 
-      {activeStoreId && (
+      {(
         <Card>
           {loadingOrders ? (
             <div className="py-12 text-center text-[12px] text-[#94A3B8]">
@@ -4524,6 +4674,58 @@ ${text.substring(
               </div>
             )}
 
+            {/* STORE */}
+
+            <div>
+              <label className="text-[12px] font-medium text-[#374151] block mb-1">
+                Store / Branch <span className="text-red-500">*</span>
+              </label>
+
+              <select
+                value={form.store_id ?? ""}
+                onChange={(event) => {
+                  const nextStoreId = event.target.value
+                    ? Number(event.target.value)
+                    : null;
+
+                  setError("");
+                  setSuccess("");
+                  setShowAutofillMenu(false);
+
+                  setForm((previous) => ({
+                    ...previous,
+                    store_id: nextStoreId,
+                    // Changing the destination store clears the current item lines
+                    // because availability and stock are store-specific.
+                    items: [emptyPOItem()],
+                  }));
+                }}
+                disabled={loadingStores || saving}
+                className="w-full h-9 px-3 text-[13px] rounded-lg border border-[#E2E8F0] bg-white focus:outline-none focus:border-[#4F46E5]"
+              >
+                <option value="">
+                  {loadingStores
+                    ? "Loading stores..."
+                    : stores.length === 0
+                    ? "No stores available"
+                    : "Select Store / Branch"}
+                </option>
+
+                {stores.map((store) => (
+                  <option key={store.id} value={store.id}>
+                    {store.store_name}
+                    {store.branch_name
+                      ? ` — ${store.branch_name}`
+                      : ""}
+                  </option>
+                ))}
+              </select>
+
+              <p className="text-[10px] text-[#94A3B8] mt-1">
+                Stock received from this purchase order will be added to this store only.
+              </p>
+            </div>
+
             {/* SUPPLIER / DATE */}
 
             <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
@@ -4910,6 +5112,30 @@ ${text.substring(
 
                         </div>
 
+
+                         {/* UNIT COST */}
+
+                        <div>
+
+                          <label className="text-[11px] font-medium text-[#64748B] block mb-1">
+                            Current Stock
+                          </label>
+
+                          <input disabled
+                            type="text"
+                            value={
+                              selectedProduct
+                                ? Number(
+                                    selectedProduct.stock ||
+                                      0
+                                  ).toLocaleString()
+                                : ""
+                            }
+                            className="w-full h-9 px-2 text-[12px] rounded-lg "
+                          />
+
+                        </div>
+
                         {/* TOTAL */}
 
                         <div>
@@ -5047,7 +5273,7 @@ ${text.substring(
                 variant="primary"
                 disabled={
                   saving ||
-                  !activeStoreId ||
+                  !form.store_id ||
                   form.items.length ===
                     0
                 }

@@ -49,6 +49,14 @@ type PaymentMethod = {
   updated_at?: string;
 };
 
+
+type PaymentStore = {
+  id: number;
+  store_name?: string | null;
+  branch_name: string;
+  status?: string | null;
+};
+
 type ListResponse = {
   success: boolean;
   message?: string;
@@ -91,6 +99,15 @@ export default function PaymentMethods({
   const [methods, setMethods] =
     useState<PaymentMethod[]>([]);
 
+  const [stores, setStores] =
+    useState<PaymentStore[]>([]);
+
+  const [selectedStoreId, setSelectedStoreId] =
+    useState<number | null>(activeStoreId ?? null);
+
+  const [storesLoading, setStoresLoading] =
+    useState(true);
+
   const [loading, setLoading] =
     useState(true);
 
@@ -99,6 +116,91 @@ export default function PaymentMethods({
 
   const [savingId, setSavingId] =
     useState<number | null>(null);
+
+  /*
+  |--------------------------------------------------------------------------
+  | LOAD STORES
+  |--------------------------------------------------------------------------
+  */
+
+  const loadStores = useCallback(async () => {
+    try {
+      setStoresLoading(true);
+
+      const response = await fetch(
+        "https://sakuracareapi.site/rhea-pos-api/stores/topbar.php",
+        {
+          method: "GET",
+          headers: {
+            Accept: "application/json",
+          },
+        }
+      );
+
+      const data = await response.json();
+
+      if (!response.ok || !data.success) {
+        throw new Error(
+          data.message || "Failed to load stores."
+        );
+      }
+
+      const rows = Array.isArray(data.stores)
+        ? data.stores
+        : Array.isArray(data.data)
+          ? data.data
+          : [];
+
+      const normalized = rows
+        .map((store: any) => ({
+          id: Number(store.id),
+          store_name: store.store_name ?? null,
+          branch_name:
+            String(
+              store.branch_name ??
+              store.store_name ??
+              `Store #${store.id}`
+            ).trim(),
+          status: store.status ?? null,
+        }))
+        .filter(
+          (store: PaymentStore) =>
+            Number.isInteger(store.id) &&
+            store.id > 0 &&
+            store.branch_name !== "" &&
+            String(store.status ?? "").toLowerCase() !== "inactive"
+        );
+
+      setStores(normalized);
+
+      // Keep the current topbar store as the initial selection.
+      if (
+        activeStoreId &&
+        normalized.some((store: PaymentStore) => store.id === Number(activeStoreId))
+      ) {
+        setSelectedStoreId(Number(activeStoreId));
+      } else if (normalized.length > 0) {
+        setSelectedStoreId(normalized[0].id);
+      } else {
+        setSelectedStoreId(null);
+      }
+    } catch (err) {
+      console.error("Stores load error:", err);
+      setStores([]);
+      setSelectedStoreId(null);
+      setError(
+        err instanceof Error
+          ? err.message
+          : "Failed to load stores."
+      );
+    } finally {
+      setStoresLoading(false);
+    }
+  }, [activeStoreId]);
+
+  useEffect(() => {
+    loadStores();
+  }, [loadStores]);
 
   /*
   |--------------------------------------------------------------------------
@@ -115,7 +217,7 @@ export default function PaymentMethods({
       |--------------------------------------------------------------------------
       */
 
-      if (!activeStoreId || activeStoreId <= 0) {
+      if (!selectedStoreId || selectedStoreId <= 0) {
 
         setMethods([]);
         setLoading(false);
@@ -140,7 +242,7 @@ export default function PaymentMethods({
         const response =
           await fetch(
             `${LIST_API}?store_id=${encodeURIComponent(
-              activeStoreId
+              selectedStoreId
             )}`,
             {
               method: "GET",
@@ -194,7 +296,7 @@ export default function PaymentMethods({
         setLoading(false);
       }
 
-    }, [activeStoreId]);
+    }, [selectedStoreId]);
 
   /*
   |--------------------------------------------------------------------------
@@ -332,7 +434,7 @@ export default function PaymentMethods({
                   method.id,
 
                 store_id:
-                  activeStoreId,
+                  selectedStoreId,
 
                 enabled:
                   newEnabled,
@@ -484,8 +586,9 @@ export default function PaymentMethods({
   */
 
   if (
-    !activeStoreId ||
-    activeStoreId <= 0
+    storesLoading ||
+    !selectedStoreId ||
+    selectedStoreId <= 0
   ) {
 
     return (
@@ -500,12 +603,15 @@ export default function PaymentMethods({
             </div>
 
             <p className="text-[14px] font-semibold text-[#0F172A]">
-              No Store Selected
+              {storesLoading
+                ? "Loading Stores..."
+                : "No Store Available"}
             </p>
 
             <p className="text-[12px] text-[#64748B] mt-1">
-              Please select a store to configure
-              its payment methods.
+              {storesLoading
+                ? "Loading available branches..."
+                : "No active stores are available for payment settings."}
             </p>
 
           </div>
@@ -572,9 +678,7 @@ export default function PaymentMethods({
             Payment Methods
           </h2>
 
-          <Badge variant="neutral">
-            Store #{activeStoreId}
-          </Badge>
+      
 
         </div>
 
@@ -584,6 +688,46 @@ export default function PaymentMethods({
         </p>
 
       </div>
+
+      {/* ================================================================
+          STORE SELECTOR
+      ================================================================= */}
+
+      <Card className="p-4">
+        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+          <div>
+            <label className="text-[11px] font-medium text-[#64748B] block mb-1">
+              Store / Branch
+            </label>
+            <p className="text-[11px] text-[#94A3B8]">
+              Select the branch whose payment methods you want to configure.
+            </p>
+          </div>
+
+          <select
+            value={selectedStoreId ? String(selectedStoreId) : ""}
+            onChange={(e) => {
+              const value = Number(e.target.value);
+              setSelectedStoreId(
+                Number.isInteger(value) && value > 0 ? value : null
+              );
+              setError("");
+            }}
+            disabled={storesLoading || stores.length === 0}
+            className="w-full sm:w-[280px] h-10 px-3 text-[12px] rounded-lg border border-[#E2E8F0] bg-white text-[#0F172A] outline-none focus:border-[#4F46E5] focus:ring-2 focus:ring-[#4F46E5]/10 disabled:bg-[#F8FAFC] disabled:text-[#94A3B8]"
+          >
+            {stores.length === 0 && (
+              <option value="">No stores available</option>
+            )}
+
+            {stores.map((store) => (
+              <option key={store.id} value={String(store.id)}>
+                {store.branch_name}
+              </option>
+            ))}
+          </select>
+        </div>
+      </Card>
 
       {/* ================================================================
           STORE NOTICE
@@ -651,8 +795,8 @@ export default function PaymentMethods({
 
             <p className="text-[11px] text-[#64748B] mt-0.5">
               These payment method settings are saved
-              specifically for Store #{activeStoreId}.
-              Changing stores loads that store's settings.
+              specifically for the selected branch.
+              Changing the branch loads that branch's settings.
             </p>
 
           </div>
@@ -749,7 +893,7 @@ export default function PaymentMethods({
 
             <p className="text-[12px] text-[#64748B] mt-1">
               No payment methods have been configured
-              for this store.
+              for the selected branch.
             </p>
 
           </div>

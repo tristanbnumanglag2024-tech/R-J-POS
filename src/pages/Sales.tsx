@@ -1,6 +1,5 @@
-import { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import {
-  Card,
   Badge,
   Button,
   SearchBar,
@@ -13,12 +12,18 @@ import {
 } from "../components/ui";
 
 interface SalesProps {
-  activeStoreId: number | null;
+  activeStoreId?: number | null;
+}
+
+interface StoreOption {
+  id: number;
+  branch_name: string;
 }
 
 interface Sale {
   id: number;
   store_id: number;
+  branch_name?: string;
   cashier_id: number;
   cashier: string;
   cashier_email: string;
@@ -32,6 +37,8 @@ interface Sale {
   payment_method: string;
   amount_paid: number;
   status: string;
+  refund_status?: string | null;
+  display_status?: string | null;
   notes: string | null;
   items: number;
   created_at: string;
@@ -55,6 +62,22 @@ interface SaleDetail extends Sale {
 }
 
 const API_BASE = "https://sakuracareapi.site/rhea-pos-api";
+
+type SalesCardProps = {
+  children: React.ReactNode;
+  className?: string;
+};
+
+function SalesCard({ children, className = "" }: SalesCardProps) {
+  return (
+    <div
+      className={`rounded-2xl border border-[#E2E8F0] bg-white shadow-sm ${className}`}
+    >
+      {children}
+    </div>
+  );
+}
+
 
 function fmt(value: number) {
   return "$" + Number(value || 0).toLocaleString("en-US", {
@@ -82,8 +105,20 @@ function statusBadge(status: string) {
     return <Badge variant="success">Completed</Badge>;
   }
 
-  if (value === "refunded") {
+  if (value === "refunded" || value === "approved") {
     return <Badge variant="danger">Refunded</Badge>;
+  }
+
+  if (value === "partial" || value === "partially_refunded") {
+    return <Badge variant="warning">Partially Refunded</Badge>;
+  }
+
+  if (value === "pending") {
+    return <Badge variant="warning">Pending</Badge>;
+  }
+
+  if (value === "rejected") {
+    return <Badge variant="warning">Rejected</Badge>;
   }
 
   if (value === "voided") {
@@ -122,6 +157,10 @@ export default function Sales({ activeStoreId }: SalesProps) {
   const [payFilter, setPayFilter] = useState("");
   const [statusFilter, setStatusFilter] = useState("");
 
+  // Centralized branch filter. 0 = All Branches.
+  const [storeFilter, setStoreFilter] = useState<number>(0);
+  const [stores, setStores] = useState<StoreOption[]>([]);
+
   const [page, setPage] = useState(1);
   const [detail, setDetail] = useState<SaleDetail | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
@@ -129,22 +168,70 @@ export default function Sales({ activeStoreId }: SalesProps) {
   const PER_PAGE = 8;
 
   // ============================================================
+  // LOAD STORES
+  // ============================================================
+
+  useEffect(() => {
+    const loadStores = async () => {
+      try {
+        const response = await fetch(`${API_BASE}/stores/topbar.php`, {
+          headers: { Accept: "application/json" },
+        });
+
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+
+        const data = await response.json();
+
+        if (!data.success) {
+          throw new Error(data.message || "Unable to load stores.");
+        }
+
+        const rows = Array.isArray(data.stores)
+          ? data.stores
+          : Array.isArray(data.data?.stores)
+            ? data.data.stores
+            : [];
+
+        const normalized: StoreOption[] = rows
+          .map((store: any) => ({
+            id: Number(store.id),
+            branch_name: String(
+              store.branch_name ?? store.store_name ?? `Store #${store.id}`
+            ),
+          }))
+          .filter((store: StoreOption) => store.id > 0);
+
+        setStores(normalized);
+
+        // Keep compatibility with a parent-selected store when provided.
+        if (activeStoreId && activeStoreId > 0) {
+          setStoreFilter(activeStoreId);
+        }
+      } catch (err) {
+        console.error("Load stores error:", err);
+      }
+    };
+
+    loadStores();
+  }, [activeStoreId]);
+
+  // ============================================================
   // LOAD SALES
   // ============================================================
 
   useEffect(() => {
-    if (!activeStoreId) {
-      setSales([]);
-      return;
-    }
-
     const loadSales = async () => {
       try {
         setLoading(true);
         setError("");
 
+        const query =
+          storeFilter > 0
+            ? `?store_id=${encodeURIComponent(storeFilter)}`
+            : "";
+
         const response = await fetch(
-          `${API_BASE}/pos/sales/list.php?store_id=${activeStoreId}`,
+          `${API_BASE}/pos/sales/list.php${query}`,
           {
             headers: {
               Accept: "application/json",
@@ -178,7 +265,22 @@ export default function Sales({ activeStoreId }: SalesProps) {
     };
 
     loadSales();
-  }, [activeStoreId]);
+  }, [storeFilter]);
+
+  // ============================================================
+  // BRANCH OPTIONS
+  // ============================================================
+
+  const branchOptions = useMemo(
+    () => [
+      { value: "0", label: "All Branches" },
+      ...stores.map((store) => ({
+        value: String(store.id),
+        label: store.branch_name,
+      })),
+    ],
+    [stores]
+  );
 
   // ============================================================
   // CASHIERS
@@ -226,7 +328,7 @@ export default function Sales({ activeStoreId }: SalesProps) {
     const values = Array.from(
       new Set(
         sales
-          .map((sale) => sale.status)
+          .map((sale) => sale.display_status || sale.refund_status || sale.status)
           .filter(Boolean)
       )
     );
@@ -288,7 +390,7 @@ export default function Sales({ activeStoreId }: SalesProps) {
 
       const matchStatus =
         !statusFilter ||
-        sale.status === statusFilter;
+        (sale.display_status || sale.refund_status || sale.status) === statusFilter;
 
       return (
         matchDate &&
@@ -332,11 +434,39 @@ export default function Sales({ activeStoreId }: SalesProps) {
     (sale) => sale.status === "completed"
   ).length;
 
+  const getOriginalSaleTotal = (sale: Sale) =>
+    Math.max(
+      0,
+      Number(sale.subtotal || 0) -
+        Number(sale.discount || 0) +
+        Number(sale.taxtotal || 0)
+    );
+
+  const getRefundAmount = (sale: Sale) => {
+    const status = String(
+      sale.display_status ||
+        sale.refund_status ||
+        sale.status ||
+        ""
+    ).trim().toLowerCase();
+
+    // Only approved refunds affect the Refunds total.
+    if (
+      status !== "refunded" &&
+      status !== "partial" &&
+      status !== "partially_refunded"
+    ) {
+      return 0;
+    }
+
+    const originalTotal = getOriginalSaleTotal(sale);
+    const currentNetTotal = Math.max(0, Number(sale.total || 0));
+
+    return Math.max(0, originalTotal - currentNetTotal);
+  };
+
   const totalRefunds = filtered.reduce(
-    (sum, sale) =>
-      sale.status === "refunded"
-        ? sum + Number(sale.total)
-        : sum,
+    (sum, sale) => sum + getRefundAmount(sale),
     0
   );
 
@@ -345,13 +475,15 @@ export default function Sales({ activeStoreId }: SalesProps) {
   // ============================================================
 
   const viewSale = async (saleId: number) => {
-    if (!activeStoreId) return;
-
     try {
       setDetailLoading(true);
 
       const response = await fetch(
-        `${API_BASE}/pos/sales/view.php?id=${saleId}&store_id=${activeStoreId}`,
+        `${API_BASE}/pos/sales/view.php?id=${saleId}${
+          storeFilter > 0
+            ? `&store_id=${encodeURIComponent(storeFilter)}`
+            : ""
+        }`,
         {
           headers: {
             Accept: "application/json",
@@ -390,31 +522,13 @@ export default function Sales({ activeStoreId }: SalesProps) {
 
   const clearFilters = () => {
     setSearch("");
+    setStoreFilter(0);
     setDateFilter("today");
     setCashierFilter("");
     setPayFilter("");
     setStatusFilter("");
     setPage(1);
   };
-
-  // ============================================================
-  // NO STORE
-  // ============================================================
-
-  if (!activeStoreId) {
-    return (
-      <div className="p-6">
-        <Card className="p-10 text-center">
-          <p className="text-[14px] font-semibold text-[#0F172A]">
-            No Store Selected
-          </p>
-          <p className="text-[12px] text-[#64748B] mt-1">
-            Select a store to view sales transactions.
-          </p>
-        </Card>
-      </div>
-    );
-  }
 
   // ============================================================
   // RENDER
@@ -448,7 +562,7 @@ export default function Sales({ activeStoreId }: SalesProps) {
 
       {/* SUMMARY */}
       <div className="grid grid-cols-3 gap-3">
-        <Card className="px-5 py-4 flex items-center justify-between">
+        <SalesCard className="px-5 py-4 flex items-center justify-between">
           <span className="text-[12px] text-[#64748B]">
             Total Sales
           </span>
@@ -456,9 +570,9 @@ export default function Sales({ activeStoreId }: SalesProps) {
           <span className="text-[16px] font-bold text-emerald-500">
             {fmt(totalSales)}
           </span>
-        </Card>
+        </SalesCard>
 
-        <Card className="px-5 py-4 flex items-center justify-between">
+        <SalesCard className="px-5 py-4 flex items-center justify-between">
           <span className="text-[12px] text-[#64748B]">
             Transactions
           </span>
@@ -466,9 +580,9 @@ export default function Sales({ activeStoreId }: SalesProps) {
           <span className="text-[16px] font-bold text-[#4F46E5]">
             {totalTransactions}
           </span>
-        </Card>
+        </SalesCard>
 
-        <Card className="px-5 py-4 flex items-center justify-between">
+        <SalesCard className="px-5 py-4 flex items-center justify-between">
           <span className="text-[12px] text-[#64748B]">
             Refunds
           </span>
@@ -476,12 +590,21 @@ export default function Sales({ activeStoreId }: SalesProps) {
           <span className="text-[16px] font-bold text-red-500">
             {fmt(totalRefunds)}
           </span>
-        </Card>
+        </SalesCard>
       </div>
 
       {/* FILTERS */}
-      <Card className="p-4">
+      <SalesCard className="p-4">
         <div className="flex flex-wrap items-center gap-3">
+
+          <Select
+            value={String(storeFilter)}
+            onChange={(value) => {
+              setStoreFilter(Number(value) || 0);
+              setPage(1);
+            }}
+            options={branchOptions}
+          />
 
           <SearchBar
             value={search}
@@ -553,19 +676,19 @@ export default function Sales({ activeStoreId }: SalesProps) {
             {filtered.length} transactions
           </span>
         </div>
-      </Card>
+      </SalesCard>
 
       {/* ERROR */}
       {error && (
-        <Card className="p-4 border-red-200 bg-red-50">
+        <SalesCard className="p-4 border-red-200 bg-red-50">
           <p className="text-[12px] text-red-600">
             {error}
           </p>
-        </Card>
+        </SalesCard>
       )}
 
       {/* TABLE */}
-      <Card>
+      <SalesCard>
         {loading ? (
           <div className="p-10 text-center">
             <p className="text-[13px] text-[#64748B]">
@@ -577,6 +700,7 @@ export default function Sales({ activeStoreId }: SalesProps) {
             <Table
               headers={[
                 "Receipt #",
+                "Branch",
                 "Date",
                 "Time",
                 "Cashier",
@@ -603,6 +727,12 @@ export default function Sales({ activeStoreId }: SalesProps) {
                     <Td mono>
                       <span className="text-[#4F46E5]">
                         {sale.receipt_no}
+                      </span>
+                    </Td>
+
+                    <Td>
+                      <span className="font-medium text-[#334155]">
+                        {sale.branch_name || `Store #${sale.store_id}`}
                       </span>
                     </Td>
 
@@ -668,7 +798,13 @@ export default function Sales({ activeStoreId }: SalesProps) {
                     </Td>
 
                     <Td>
-                      <span className="font-semibold text-[#0F172A]">
+                      <span
+                        className={
+                          getRefundAmount(sale) > 0
+                            ? "font-semibold text-red-600"
+                            : "font-semibold text-[#0F172A]"
+                        }
+                      >
                         {fmt(sale.total)}
                       </span>
                     </Td>
@@ -678,7 +814,11 @@ export default function Sales({ activeStoreId }: SalesProps) {
                     </Td>
 
                     <Td>
-                      {statusBadge(sale.status)}
+                      {statusBadge(
+                        sale.display_status ||
+                          sale.refund_status ||
+                          sale.status
+                      )}
                     </Td>
 
                     <Td>
@@ -717,7 +857,7 @@ export default function Sales({ activeStoreId }: SalesProps) {
             />
           </>
         )}
-      </Card>
+      </SalesCard>
 
       {/* DETAIL MODAL */}
       {detail && (
@@ -791,7 +931,11 @@ export default function Sales({ activeStoreId }: SalesProps) {
                       Status
                     </span>
 
-                    {statusBadge(detail.status)}
+                    {statusBadge(
+                      detail.display_status ||
+                        detail.refund_status ||
+                        detail.status
+                    )}
                   </div>
 
                   <div className="flex justify-between">
@@ -903,14 +1047,6 @@ export default function Sales({ activeStoreId }: SalesProps) {
                   Email Receipt
                 </Button>
 
-                {detail.status === "completed" && (
-                  <Button
-                    variant="danger"
-                    size="sm"
-                  >
-                    Issue Refund
-                  </Button>
-                )}
               </div>
             </div>
           )}

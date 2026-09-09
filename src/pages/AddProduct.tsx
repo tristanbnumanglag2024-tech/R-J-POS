@@ -15,7 +15,7 @@ interface StoreOption {
 
 interface Category {
   id: number;
-  store_id: number;
+  store_id?: number;
   name: string;
   description?: string;
   image?: string | null;
@@ -24,7 +24,7 @@ interface Category {
 
 interface Supplier {
   id: number;
-  store_id: number;
+  store_id?: number;
   name: string;
   contact?: string;
   email?: string;
@@ -94,7 +94,7 @@ export default function AddProduct({
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState("");
 
-  const [createScope, setCreateScope] = useState<"current" | "selected" | "all">("current");
+  const [createScope, setCreateScope] = useState<"selected" | "all">("selected");
   const [selectedStoreIds, setSelectedStoreIds] = useState<number[]>([]);
 
   // Only active stores can be selected as target stores.
@@ -201,7 +201,7 @@ export default function AddProduct({
       setLoadingCategories(true);
 
       const response = await fetch(
-        `${API_BASE}/categories/list.php?store_id=${currentStoreId}`
+        `${API_BASE}/categories/list.php`
       );
 
       const data = await response.json();
@@ -214,9 +214,7 @@ export default function AddProduct({
 
       const storeCategories = Array.isArray(data.categories)
         ? data.categories.filter(
-            (category: Category) =>
-              Number(category.store_id) === currentStoreId &&
-              category.status === "active"
+            (category: Category) => category.status === "active"
           )
         : [];
 
@@ -247,7 +245,7 @@ export default function AddProduct({
       setLoadingSuppliers(true);
 
       const response = await fetch(
-        `${API_BASE}/suppliers/list.php?store_id=${currentStoreId}`
+        `${API_BASE}/suppliers/list.php`
       );
 
       const data = await response.json();
@@ -260,9 +258,7 @@ export default function AddProduct({
 
       const storeSuppliers = Array.isArray(data.suppliers)
         ? data.suppliers.filter(
-            (supplier: Supplier) =>
-              Number(supplier.store_id) === currentStoreId &&
-              supplier.status === "active"
+            (supplier: Supplier) => supplier.status === "active"
           )
         : [];
 
@@ -312,8 +308,10 @@ export default function AddProduct({
     fetchStores();
     fetchCategories(storeId);
     fetchSuppliers(storeId);
-    setCreateScope("current");
-    setSelectedStoreIds([storeId]);
+    // Product creation is centralized: default to Selected Stores.
+    // Do not preselect the current store.
+    setCreateScope("selected");
+    setSelectedStoreIds([]);
   }, [storeId]);
 
   /*
@@ -454,12 +452,6 @@ export default function AddProduct({
         return false;
       }
 
-      if (Number(category.store_id) !== Number(storeId)) {
-        setError(
-          "The selected category does not belong to this store."
-        );
-        return false;
-      }
     }
 
     /*
@@ -478,12 +470,6 @@ export default function AddProduct({
         return false;
       }
 
-      if (Number(supplier.store_id) !== Number(storeId)) {
-        setError(
-          "The selected supplier does not belong to this store."
-        );
-        return false;
-      }
     }
 
     /*
@@ -957,51 +943,10 @@ export default function AddProduct({
           </h2>
 
           <p className="text-[12px] text-[#64748B] mt-0.5">
-            Create a product for the selected store.
+            Create a product and choose where it is available.
           </p>
         </div>
       </div>
-
-      {/* STORE */}
-
-      {storeId ? (
-        <div className="flex items-center gap-3 rounded-lg border border-indigo-200 bg-indigo-50 px-4 py-3">
-          <div className="w-8 h-8 rounded-lg bg-indigo-600 text-white flex items-center justify-center">
-            <svg
-              width="15"
-              height="15"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="2"
-            >
-              <path d="M3 9l2-5h14l2 5" />
-              <path d="M5 9v10h14V9" />
-              <path d="M3 9h18" />
-            </svg>
-          </div>
-
-          <div>
-            <p className="text-[10px] text-indigo-500 font-medium uppercase">
-              Current Store
-            </p>
-
-            <p className="text-[13px] font-semibold text-indigo-900">
-              Store #{storeId}
-            </p>
-          </div>
-        </div>
-      ) : (
-        <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-3">
-          <p className="text-[12px] font-semibold text-red-700">
-            No store selected
-          </p>
-
-          <p className="text-[11px] text-red-600 mt-0.5">
-            Please select a store from the store selector before creating a product.
-          </p>
-        </div>
-      )}
 
       {/* CREATE FOR STORES */}
 
@@ -1015,13 +960,13 @@ export default function AddProduct({
               </p>
             </div>
             <span className="text-[10px] font-medium text-[#64748B] bg-[#F8FAFC] border border-[#E2E8F0] px-2 py-1 rounded-md">
-              {createScope === "all" ? `${activeStores.length} stores` : createScope === "selected" ? `${selectedStoreIds.length} selected` : "Current store"}
+              {createScope === "all" ? `${activeStores.length} stores` : createScope === "selected" ? `${selectedStoreIds.length} selected` : "Select stores"}
             </span>
           </div>
 
-          <div className="grid grid-cols-3 gap-2 mt-4">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 mt-4">
             {[
-              { value: "current", label: "Current Store", desc: "Create only here" },
+             
               { value: "selected", label: "Selected Stores", desc: "Choose branches" },
               { value: "all", label: "All Stores", desc: "Create everywhere" },
             ].map((option) => {
@@ -1031,12 +976,10 @@ export default function AddProduct({
                   key={option.value}
                   type="button"
                   onClick={() => {
-                    const value = option.value as "current" | "selected" | "all";
+                    const value = option.value as "selected" | "all";
                     setCreateScope(value);
                     setError("");
-                    if (value === "current") {
-                      setSelectedStoreIds([storeId]);
-                    } else if (value === "all") {
+                    if (value === "all") {
                       setSelectedStoreIds(activeStores.map((store) => store.id));
                     }
                   }}
@@ -1078,9 +1021,7 @@ export default function AddProduct({
                         <p className="text-[10px] text-[#94A3B8] truncate">{store.store_name}</p>
                       </div>
                     </div>
-                    {store.id === storeId && (
-                      <span className="text-[9px] font-semibold text-[#4F46E5]">CURRENT</span>
-                    )}
+
                   </label>
                 );
               })}
@@ -1090,7 +1031,7 @@ export default function AddProduct({
           {createScope === "all" && (
             <div className="mt-3 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2">
               <p className="text-[11px] text-emerald-700">
-                The product will be created in all {activeStores.length} active stores. Initial stock is applied only to the current store; other stores start at 0.
+                The product will be created in all {activeStores.length} active stores. Initial stock is applied to the selected stores according to the creation settings.
               </p>
             </div>
           )}
@@ -1167,7 +1108,7 @@ export default function AddProduct({
                   loadingCategories
                     ? "Loading categories..."
                     : categories.length === 0
-                    ? "No categories for this store"
+                    ? "No active categories"
                     : "Select category"
                 }
                 options={categories.map(
@@ -1328,7 +1269,7 @@ export default function AddProduct({
                     loadingSuppliers
                       ? "Loading suppliers..."
                       : suppliers.length === 0
-                      ? "No suppliers for this store"
+                      ? "No active suppliers"
                       : "Select supplier"
                   }
                   options={suppliers.map(

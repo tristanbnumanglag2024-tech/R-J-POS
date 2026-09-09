@@ -71,6 +71,13 @@ interface Discount {
   status: DiscountStatus;
 }
 
+interface DiscountStore {
+  id: number;
+  store_name?: string | null;
+  branch_name: string;
+  status?: string | null;
+}
+
 interface DiscountForm {
   name: string;
   code: string;
@@ -110,6 +117,15 @@ export default function Discounts({
 
   const [list, setList] =
     useState<Discount[]>([]);
+
+  const [stores, setStores] =
+    useState<DiscountStore[]>([]);
+
+  const [selectedStoreId, setSelectedStoreId] =
+    useState<number | null>(activeStoreId ?? null);
+
+  const [storesLoading, setStoresLoading] =
+    useState(true);
 
   const [loading, setLoading] =
     useState(false);
@@ -188,6 +204,91 @@ export default function Discounts({
 
   /*
   |--------------------------------------------------------------------------
+  | LOAD STORES
+  |--------------------------------------------------------------------------
+  */
+
+  const loadStores = useCallback(async () => {
+    try {
+      setStoresLoading(true);
+
+      const response = await fetch(
+        `${API_BASE}/stores/topbar.php`,
+        {
+          method: "GET",
+          headers: {
+            Accept: "application/json",
+          },
+        }
+      );
+
+      const data = await response.json();
+
+      if (!response.ok || !data.success) {
+        throw new Error(
+          data.message || "Failed to load stores."
+        );
+      }
+
+      const rows = Array.isArray(data.stores)
+        ? data.stores
+        : Array.isArray(data.data)
+          ? data.data
+          : [];
+
+      const normalized: DiscountStore[] = rows
+        .map((store: any) => ({
+          id: Number(store.id),
+          store_name: store.store_name ?? null,
+          branch_name: String(
+            store.branch_name ??
+            store.store_name ??
+            `Store #${store.id}`
+          ).trim(),
+          status: store.status ?? null,
+        }))
+        .filter(
+          (store: DiscountStore) =>
+            Number.isInteger(store.id) &&
+            store.id > 0 &&
+            store.branch_name !== "" &&
+            String(store.status ?? "").toLowerCase() !== "inactive"
+        );
+
+      setStores(normalized);
+
+      if (
+        activeStoreId &&
+        normalized.some(
+          (store) => store.id === Number(activeStoreId)
+        )
+      ) {
+        setSelectedStoreId(Number(activeStoreId));
+      } else if (normalized.length > 0) {
+        setSelectedStoreId(normalized[0].id);
+      } else {
+        setSelectedStoreId(null);
+      }
+    } catch (err) {
+      console.error("Discount stores load error:", err);
+      setStores([]);
+      setSelectedStoreId(null);
+      setError(
+        err instanceof Error
+          ? err.message
+          : "Failed to load stores."
+      );
+    } finally {
+      setStoresLoading(false);
+    }
+  }, [activeStoreId]);
+
+  useEffect(() => {
+    loadStores();
+  }, [loadStores]);
+
+  /*
+  |--------------------------------------------------------------------------
   | LOAD DISCOUNTS
   |--------------------------------------------------------------------------
   */
@@ -195,7 +296,7 @@ export default function Discounts({
   const loadDiscounts =
     useCallback(async () => {
 
-      if (!activeStoreId) {
+      if (!selectedStoreId) {
 
         setList([]);
 
@@ -213,7 +314,7 @@ export default function Discounts({
 
         params.set(
           "store_id",
-          String(activeStoreId)
+          String(selectedStoreId)
         );
 
         const response =
@@ -415,7 +516,7 @@ export default function Discounts({
 
       }
 
-    }, [activeStoreId]);
+    }, [selectedStoreId]);
 
   /*
   |--------------------------------------------------------------------------
@@ -433,14 +534,14 @@ export default function Discounts({
 
     setShowAdd(false);
 
-    if (!activeStoreId) {
+    if (!selectedStoreId) {
       return;
     }
 
     loadDiscounts();
 
   }, [
-    activeStoreId,
+    selectedStoreId,
     loadDiscounts,
   ]);
 
@@ -535,7 +636,7 @@ export default function Discounts({
       Number(
         discount.store_id
       ) !==
-      Number(activeStoreId)
+      Number(selectedStoreId)
     ) {
 
       setError(
@@ -613,7 +714,7 @@ export default function Discounts({
   const handleSave =
     async () => {
 
-      if (!activeStoreId) {
+      if (!selectedStoreId) {
 
         setError(
           "Please select a store first."
@@ -735,7 +836,7 @@ export default function Discounts({
 
           store_id:
             Number(
-              activeStoreId
+              selectedStoreId
             ),
 
           name:
@@ -916,7 +1017,7 @@ export default function Discounts({
       discount: Discount
     ) => {
 
-      if (!activeStoreId) {
+      if (!selectedStoreId) {
 
         setError(
           "Please select a store first."
@@ -935,7 +1036,7 @@ export default function Discounts({
         Number(
           discount.store_id
         ) !==
-        Number(activeStoreId)
+        Number(selectedStoreId)
       ) {
 
         setError(
@@ -989,7 +1090,7 @@ export default function Discounts({
 
                   store_id:
                     Number(
-                      activeStoreId
+                      selectedStoreId
                     ),
 
                 }),
@@ -1068,7 +1169,10 @@ export default function Discounts({
   |--------------------------------------------------------------------------
   */
 
-  if (!activeStoreId) {
+  if (
+    storesLoading ||
+    !selectedStoreId
+  ) {
 
     return (
 
@@ -1083,11 +1187,15 @@ export default function Discounts({
             </div>
 
             <h3 className="text-[14px] font-semibold text-[#0F172A]">
-              Select a Store
+              {storesLoading
+                ? "Loading Stores..."
+                : "No Store Available"}
             </h3>
 
             <p className="text-[12px] text-[#64748B] mt-1">
-              Please select a store before managing discounts.
+              {storesLoading
+                ? "Loading available branches..."
+                : "No active stores are available for discounts."}
             </p>
 
           </div>
@@ -1161,7 +1269,7 @@ export default function Discounts({
           </h2>
 
           <p className="text-[12px] text-[#64748B] mt-0.5">
-            Promotions, coupons, and discount rules
+            Promotions, coupons, and discount rules for the selected branch
           </p>
 
         </div>
@@ -1201,6 +1309,64 @@ export default function Discounts({
         </Button>
 
       </div>
+
+      {/* ================================================================
+          STORE SELECTOR
+      ================================================================= */}
+
+      <Card className="p-4">
+        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+          <div>
+            <label className="text-[11px] font-medium text-[#64748B] block mb-1">
+              Store / Branch
+            </label>
+            <p className="text-[11px] text-[#94A3B8]">
+              Select the branch whose discounts you want to manage.
+            </p>
+          </div>
+
+          <select
+            value={
+              selectedStoreId
+                ? String(selectedStoreId)
+                : ""
+            }
+            onChange={(e) => {
+              const value = Number(e.target.value);
+
+              setSelectedStoreId(
+                Number.isInteger(value) && value > 0
+                  ? value
+                  : null
+              );
+
+              setError("");
+              setSuccess("");
+              setList([]);
+            }}
+            disabled={
+              storesLoading ||
+              stores.length === 0
+            }
+            className="w-full sm:w-[280px] h-10 px-3 text-[12px] rounded-lg border border-[#E2E8F0] bg-white text-[#0F172A] outline-none focus:border-[#4F46E5] focus:ring-2 focus:ring-[#4F46E5]/10 disabled:bg-[#F8FAFC] disabled:text-[#94A3B8]"
+          >
+            {stores.length === 0 && (
+              <option value="">
+                No stores available
+              </option>
+            )}
+
+            {stores.map((store) => (
+              <option
+                key={store.id}
+                value={String(store.id)}
+              >
+                {store.branch_name}
+              </option>
+            ))}
+          </select>
+        </div>
+      </Card>
 
       {/* ERROR */}
 
@@ -1362,7 +1528,7 @@ export default function Discounts({
                   </p>
 
                   <p className="text-[10px] text-[#94A3B8] mt-1">
-                    Add a discount for this store to get started.
+                    Add a discount for the selected branch to get started.
                   </p>
 
                 </div>

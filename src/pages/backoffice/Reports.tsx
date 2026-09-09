@@ -487,8 +487,49 @@ export default function Reports({
   |--------------------------------------------------------------------------
   */
 
+  const normalizeSales = (rows: any[]): Sale[] =>
+    rows.map((sale: any) => ({
+      ...sale,
+      id: Number(sale.id),
+      store_id: Number(sale.store_id),
+      cashier_id: Number(sale.cashier_id),
+      customer_id:
+        sale.customer_id !== null
+          ? Number(sale.customer_id)
+          : null,
+      subtotal: Number(sale.subtotal || 0),
+      discount: Number(sale.discount || 0),
+      taxtotal: Number(sale.taxtotal || 0),
+      total: Number(sale.total || 0),
+      amount_paid: Number(
+        sale.amount_paid || 0
+      ),
+      items: Number(sale.items || 0),
+    }));
+
   const loadSales = async () => {
-    if (!activeStoreId) {
+    if (!reportStoreId) {
+      setSales([]);
+      return;
+    }
+
+    // "All Stores" is controlled by the same selector at the top.
+    // Load each active branch and combine the sales for the centralized
+    // analytics shown on this page.
+    const targetStoreIds =
+      reportScope === "all"
+        ? reportStores
+            .filter(
+              (store) =>
+                store.status !== "inactive"
+            )
+            .map((store) => store.id)
+        : [reportStoreId];
+
+    if (
+      reportScope === "all" &&
+      targetStoreIds.length === 0
+    ) {
       setSales([]);
       return;
     }
@@ -497,48 +538,36 @@ export default function Reports({
       setLoading(true);
       setError("");
 
-      const response = await fetch(
-        `${API_BASE}/pos/sales/list.php?store_id=${activeStoreId}`,
-        {
-          method: "GET",
-          headers: {
-            Accept: "application/json",
-          },
-        }
+      const responses = await Promise.all(
+        targetStoreIds.map(async (storeId) => {
+          const response = await fetch(
+            `${API_BASE}/pos/sales/list.php?store_id=${encodeURIComponent(
+              String(storeId)
+            )}`,
+            {
+              method: "GET",
+              headers: {
+                Accept: "application/json",
+              },
+            }
+          );
+
+          const data = await response.json();
+
+          if (!response.ok || !data.success) {
+            throw new Error(
+              data.message ||
+                `Unable to load sales for store ${storeId}.`
+            );
+          }
+
+          return Array.isArray(data.sales)
+            ? data.sales
+            : [];
+        })
       );
 
-      const data = await response.json();
-
-      if (!response.ok || !data.success) {
-        throw new Error(
-          data.message || "Unable to load sales."
-        );
-      }
-
-      const rows = Array.isArray(data.sales)
-        ? data.sales
-        : [];
-
-      setSales(
-        rows.map((sale: any) => ({
-          ...sale,
-          id: Number(sale.id),
-          store_id: Number(sale.store_id),
-          cashier_id: Number(sale.cashier_id),
-          customer_id:
-            sale.customer_id !== null
-              ? Number(sale.customer_id)
-              : null,
-          subtotal: Number(sale.subtotal || 0),
-          discount: Number(sale.discount || 0),
-          taxtotal: Number(sale.taxtotal || 0),
-          total: Number(sale.total || 0),
-          amount_paid: Number(
-            sale.amount_paid || 0
-          ),
-          items: Number(sale.items || 0),
-        }))
-      );
+      setSales(normalizeSales(responses.flat()));
     } catch (err) {
       console.error("Reports load error:", err);
 
@@ -556,7 +585,7 @@ export default function Reports({
 
   useEffect(() => {
     loadSales();
-  }, [activeStoreId]);
+  }, [reportStoreId, reportScope, reportStores]);
 
   /*
   |--------------------------------------------------------------------------
@@ -1515,7 +1544,7 @@ export default function Reports({
 
       {/* HEADER */}
 
-      <div className="flex items-center justify-between">
+      <div className="flex flex-col lg:flex-row lg:items-end lg:justify-between gap-4">
 
         <div>
           <h2 className="text-[18px] font-bold text-[#0F172A]">
@@ -1527,7 +1556,74 @@ export default function Reports({
           </p>
         </div>
 
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-end gap-2">
+
+          {/* CENTRALIZED STORE SELECTOR */}
+          <div className="min-w-[190px]">
+            <label className="text-[10px] font-medium text-[#64748B] block mb-1">
+              Store
+            </label>
+            <select
+              value={
+                reportScope === "all"
+                  ? "all"
+                  : reportStoreId
+                  ? String(reportStoreId)
+                  : ""
+              }
+              onChange={(e) => {
+                const value = e.target.value;
+
+                if (value === "all") {
+                  setReportScope("all");
+                  setReportStoreId(
+                    activeStoreId ??
+                      reportStores.find(
+                        (store) =>
+                          store.status !== "inactive"
+                      )?.id ??
+                      null
+                  );
+                  setGeneratedReport(null);
+                  setGeneratedData(null);
+                  setError("");
+                  return;
+                }
+
+                const selectedId = Number(value);
+
+                if (
+                  Number.isInteger(selectedId) &&
+                  selectedId > 0
+                ) {
+                  setReportScope("current");
+                  setReportStoreId(selectedId);
+                  setGeneratedReport(null);
+                  setGeneratedData(null);
+                  setError("");
+                }
+              }}
+              className="w-full h-9 px-3 text-[12px] rounded-lg border border-[#E2E8F0] bg-white"
+            >
+              <option value="all">
+                All Stores
+              </option>
+
+              {reportStores
+                .filter(
+                  (store) =>
+                    store.status !== "inactive"
+                )
+                .map((store) => (
+                  <option
+                    key={store.id}
+                    value={String(store.id)}
+                  >
+                    {store.branch_name}
+                  </option>
+                ))}
+            </select>
+          </div>
 
           <select
             value={period}
@@ -1583,9 +1679,9 @@ export default function Reports({
         </div>
       )}
 
-      {!activeStoreId && (
+      {!reportStoreId && (
         <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-[12px] text-amber-700">
-          Select a store to view reports.
+          Select a store from the top selector to view reports.
         </div>
       )}
 
@@ -1905,11 +2001,11 @@ export default function Reports({
           </h3>
 
           <p className="text-[12px] text-[#64748B]">
-            Choose the report, date range, frequency and store scope.
+            Choose the report, date range and frequency. The store selector above controls the entire Reports page.
           </p>
         </div>
 
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-3 mb-4">
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-3 mb-4">
           <div>
             <label className="text-[11px] font-medium text-[#64748B] block mb-1">
               {reportFrequency === "monthly"
@@ -2043,90 +2139,6 @@ export default function Reports({
             </select>
           </div>
 
-          <div>
-            <label className="text-[11px] font-medium text-[#64748B] block mb-1">
-              Store Scope
-            </label>
-            <select
-              value={
-                reportScope === "all"
-                  ? "all"
-                  : reportStoreId === Number(activeStoreId)
-                  ? "current"
-                  : reportStoreId
-                  ? String(reportStoreId)
-                  : "current"
-              }
-              onChange={(e) => {
-                const value = e.target.value;
-
-                if (value === "all") {
-                  setReportScope("all");
-                  setReportStoreId(
-                    activeStoreId ?? null
-                  );
-                  return;
-                }
-
-                if (value === "current") {
-                  setReportScope("current");
-                  setReportStoreId(
-                    activeStoreId ?? null
-                  );
-                  return;
-                }
-
-                const selectedId = Number(value);
-
-                if (
-                  Number.isInteger(selectedId) &&
-                  selectedId > 0
-                ) {
-                  setReportScope("current");
-                  setReportStoreId(selectedId);
-                }
-              }}
-              className="w-full h-9 px-3 text-[12px] rounded-lg border border-[#E2E8F0] bg-white"
-            >
-              <option value="current">
-               
-                {reportStores.find(
-                  (store) =>
-                    store.id === Number(activeStoreId)
-                )?.branch_name
-                  ? ` — ${
-                      reportStores.find(
-                        (store) =>
-                          store.id === Number(
-                            activeStoreId
-                          )
-                      )?.branch_name
-                    }`
-                  : ""}
-              </option>
-
-              {reportStores
-                .filter(
-                  (store) =>
-                    store.id !== Number(
-                      activeStoreId
-                    ) &&
-                    store.status !== "inactive"
-                )
-                .map((store) => (
-                  <option
-                    key={store.id}
-                    value={String(store.id)}
-                  >
-                    {store.branch_name}
-                  </option>
-                ))}
-
-              <option value="all">
-                All Stores
-              </option>
-            </select>
-          </div>
         </div>
 
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-3">

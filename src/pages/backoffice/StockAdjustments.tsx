@@ -14,6 +14,7 @@ const API_BASE = "https://sakuracareapi.site/rhea-pos-api";
 
 type Product = {
   id: number;
+  product_id?: number;
   store_id: number;
   name: string;
   sku: string | null;
@@ -52,6 +53,13 @@ type AdjustmentForm = {
 
 type StockAdjustmentsProps = {
   activeStoreId: number | null;
+};
+
+type Store = {
+  id: number;
+  store_name: string;
+  branch_name?: string | null;
+  status?: string;
 };
 
 
@@ -164,6 +172,11 @@ export default function StockAdjustments({
   const [adjustments, setAdjustments] =
     useState<Adjustment[]>([]);
 
+  const [stores, setStores] = useState<Store[]>([]);
+  const [loadingStores, setLoadingStores] = useState(false);
+  const [selectedStoreId, setSelectedStoreId] =
+  useState<number | null>(null);
+
   const [loadingProducts, setLoadingProducts] =
     useState(false);
 
@@ -227,134 +240,205 @@ export default function StockAdjustments({
 
   /*
   |--------------------------------------------------------------------------
-  | LOAD PRODUCTS
+  | LOAD STORES
   |--------------------------------------------------------------------------
   */
 
-  const loadProducts = async () => {
+  const loadStores = async () => {
+    try {
+      setLoadingStores(true);
 
-    if (!activeStoreId) {
+      const response = await fetch(
+        `${API_BASE}/stores/list.php`,
+        {
+          method: "GET",
+          headers: { Accept: "application/json" },
+        }
+      );
+
+      const data = await response.json();
+
+      if (!response.ok || !data.success) {
+        throw new Error(
+          data.message || "Failed to load stores."
+        );
+      }
+
+      const rows: Store[] = (Array.isArray(data.stores)
+        ? data.stores
+        : []
+      )
+        .filter((store: any) =>
+          !store.status || String(store.status).toLowerCase() === "active"
+        )
+        .map((store: any) => ({
+          id: Number(store.id),
+          store_name: String(
+            store.store_name ?? store.name ?? "Store"
+          ),
+          branch_name: store.branch_name ?? null,
+          status: store.status ?? "active",
+        }))
+        .filter((store: Store) => store.id > 0);
+
+      setStores(rows);
+
+      setSelectedStoreId((current) => {
+        if (current && rows.some((store) => store.id === current)) {
+          return current;
+        }
+
+        if (
+          activeStoreId &&
+          rows.some((store) => store.id === activeStoreId)
+        ) {
+          return activeStoreId;
+        }
+
+        return rows[0]?.id ?? null;
+      });
+    } catch (err) {
+      console.error("Load stores error:", err);
+      setStores([]);
+      setError(
+        err instanceof Error
+          ? err.message
+          : "Unable to load stores."
+      );
+    } finally {
+      setLoadingStores(false);
+    }
+  };
+
+  /*
+  |--------------------------------------------------------------------------
+  | LOAD PRODUCTS / INVENTORY FOR SELECTED BRANCH
+  |--------------------------------------------------------------------------
+  */
+
+  const loadProducts = async (storeId: number | null = selectedStoreId) => {
+    if (!storeId) {
       setProducts([]);
       return;
     }
 
     try {
-
       setLoadingProducts(true);
 
-      const response =
-        await fetch(
-          `${API_BASE}/products/list.php?store_id=${encodeURIComponent(
-            activeStoreId
-          )}`,
-          {
-            method: "GET",
-            headers: {
-              Accept: "application/json",
-            },
-          }
-        );
+      const response = await fetch(
+        `${API_BASE}/inventory/inventory.php?store_id=${encodeURIComponent(
+          storeId
+        )}`,
+        {
+          method: "GET",
+          headers: {
+            Accept: "application/json",
+          },
+        }
+      );
 
-      const data =
-        await response.json();
+      const text = await response.text();
+      let data: any;
 
-      if (
-        !response.ok ||
-        !data.success
-      ) {
+      try {
+        data = JSON.parse(text);
+      } catch {
         throw new Error(
-          data.message ||
-            "Failed to load products."
+          `Inventory API did not return valid JSON:\n${text.substring(0, 500)}`
         );
       }
 
-      const rows =
-        Array.isArray(data.products)
-          ? data.products
-          : [];
+      if (!response.ok || !data.success) {
+        throw new Error(
+          data.message || "Failed to load branch inventory."
+        );
+      }
 
-      const normalized =
-        rows
-          .filter(
-            (product: any) =>
-              Number(
-                product.store_id
-              ) ===
-              Number(
-                activeStoreId
-              )
-          )
-          .filter(
-            (product: any) =>
-              !product.status ||
-              product.status ===
-                "active"
-          )
-          .map(
-            (product: any) => ({
-              id: Number(
-                product.id
-              ),
+      // Support the centralized inventory API response shape used by the
+      // Inventory page. Older deployments may call the array `items`,
+      // while a few builds return `inventory` or `products`.
+      const rows = Array.isArray(data.items)
+        ? data.items
+        : Array.isArray(data.inventory)
+        ? data.inventory
+        : Array.isArray(data.products)
+        ? data.products
+        : [];
 
-              store_id: Number(
-                product.store_id
-              ),
-
-              name:
-                product.name ||
-                "",
-
-              sku:
-                product.sku ||
-                null,
-
-              stock: Number(
-                product.stock ||
-                  0
-              ),
-
-              cost:
-                product.cost !==
-                  null &&
-                product.cost !==
-                  undefined
-                  ? Number(
-                      product.cost
-                    )
-                  : null,
-
-              status:
-                product.status ||
-                "active",
-            })
+      const normalized: Product[] = rows
+        .map((item: any) => {
+          const productId = Number(
+            item.product_id ??
+              item.productId ??
+              item.id ??
+              0
           );
 
-      setProducts(
-        normalized
+          const rowStoreId = Number(
+            item.store_id ??
+              item.storeId ??
+              storeId
+          );
+
+          return {
+            // IMPORTANT: adjustment.php expects the GLOBAL products.id.
+            // Do not use product_store_id as the product_id.
+            id: productId,
+            product_id: productId,
+            store_id: rowStoreId,
+            name: String(
+              item.name ??
+                item.product_name ??
+                item.productName ??
+                ""
+            ).trim(),
+            sku: item.sku ?? item.product_sku ?? null,
+            stock: Number(
+              item.stock ??
+                item.quantity ??
+                item.inventory_quantity ??
+                0
+            ),
+            cost:
+              item.cost !== null &&
+              item.cost !== undefined
+                ? Number(item.cost)
+                : null,
+            status:
+              item.is_active === 0 ||
+              String(item.product_status ?? item.status ?? "active").toLowerCase() ===
+                "inactive"
+                ? "inactive"
+                : "active",
+          };
+        })
+        // The API already filters by store_id. Do NOT reject rows just
+        // because an older backend omits store_id from each item.
+        .filter(
+          (product: Product) =>
+            product.id > 0 &&
+            product.name !== "" &&
+            product.status !== "inactive"
+        );
+
+      console.log(
+        "Stock Adjustment products loaded:",
+        { storeId, count: normalized.length, rows }
       );
 
+      setProducts(normalized);
     } catch (err) {
-
-      console.error(
-        "Load products error:",
-        err
-      );
-
+      console.error("Load branch inventory error:", err);
       setProducts([]);
-
       setError(
         err instanceof Error
           ? err.message
-          : "Unable to load products."
+          : "Unable to load branch inventory."
       );
-
     } finally {
-
       setLoadingProducts(false);
-
     }
   };
-
 
   /*
   |--------------------------------------------------------------------------
@@ -363,9 +447,9 @@ export default function StockAdjustments({
   */
 
   const loadAdjustments =
-    async () => {
+    async (storeId: number | null = selectedStoreId) => {
 
-      if (!activeStoreId) {
+      if (!storeId) {
         setAdjustments([]);
         return;
       }
@@ -378,7 +462,7 @@ export default function StockAdjustments({
 
         const response = await fetch(
   `${API_BASE}/inventory/adjustments.php?store_id=${encodeURIComponent(
-    activeStoreId
+    storeId
   )}`,
   {
     method: "GET",
@@ -415,7 +499,7 @@ export default function StockAdjustments({
                   item.store_id
                 ) ===
                 Number(
-                  activeStoreId
+                  storeId
                 )
             )
             .map(
@@ -572,53 +656,53 @@ export default function StockAdjustments({
 
   /*
   |--------------------------------------------------------------------------
-  | STORE CHANGE
+  | INITIAL / STORE CHANGE
   |--------------------------------------------------------------------------
   */
 
   useEffect(() => {
+    loadStores();
+  }, []);
+
+  useEffect(() => {
+    if (!selectedStoreId) {
+      setProducts([]);
+      setAdjustments([]);
+      setForm(emptyForm);
+      return;
+    }
 
     setProducts([]);
     setAdjustments([]);
-
     setPage(1);
-
     setError("");
     setSuccess("");
-
     setShowModal(false);
     setDetailModal(null);
-
     setForm(emptyForm);
 
-    if (!activeStoreId) {
-      return;
+    Promise.all([
+      loadProducts(selectedStoreId),
+      loadAdjustments(selectedStoreId),
+    ]).catch((err) => {
+      console.error("Stock adjustment store load error:", err);
+    });
+  }, [selectedStoreId]);
+
+  useEffect(() => {
+    if (activeStoreId) {
+      setSelectedStoreId(activeStoreId);
     }
-
-    loadProducts();
-    loadAdjustments();
-
   }, [activeStoreId]);
 
-
-  /*
-  |--------------------------------------------------------------------------
-  | REFRESH
-  |--------------------------------------------------------------------------
-  */
-
   const refreshData = async () => {
-
-    if (!activeStoreId) {
-      return;
-    }
+    if (!selectedStoreId) return;
 
     await Promise.all([
-      loadProducts(),
-      loadAdjustments(),
+      loadProducts(selectedStoreId),
+      loadAdjustments(selectedStoreId),
     ]);
   };
-
 
   /*
   |--------------------------------------------------------------------------
@@ -732,7 +816,7 @@ export default function StockAdjustments({
   const saveAdjustment =
     async () => {
 
-      if (!activeStoreId) {
+      if (!selectedStoreId) {
 
         setError(
           "Please select a store first."
@@ -811,7 +895,7 @@ export default function StockAdjustments({
               body:
                 JSON.stringify({
                   store_id:
-                    activeStoreId,
+                    selectedStoreId,
 
                   product_id:
                     selectedProduct.id,
@@ -999,6 +1083,18 @@ export default function StockAdjustments({
           <p className="text-[12px] text-[#64748B] mt-0.5">
             Manual inventory corrections and reconciliations
           </p>
+         <p className="text-[10px] text-[#94A3B8] mt-1">
+  Branch:{" "}
+  {stores.find(
+    (store) =>
+      Number(store.id) === Number(selectedStoreId)
+  )?.branch_name ||
+    stores.find(
+      (store) =>
+        Number(store.id) === Number(selectedStoreId)
+    )?.store_name ||
+    "Not selected"}
+</p>
 
         </div>
 
@@ -1010,7 +1106,7 @@ export default function StockAdjustments({
             openNewAdjustment
           }
           disabled={
-            !activeStoreId
+            !selectedStoreId || loadingStores
           }
           icon={
             <svg
@@ -1074,10 +1170,52 @@ export default function StockAdjustments({
 
 
       {/* ================================================================
+          STORE / BRANCH
+      ================================================================ */}
+
+      <Card className="p-4">
+        <div className="flex flex-wrap items-center gap-3">
+          <label className="text-[11px] font-medium text-[#64748B] whitespace-nowrap">
+             Branch
+          </label>
+
+          <select
+            value={selectedStoreId ?? ""}
+            onChange={(event) => {
+              const nextId = event.target.value
+                ? Number(event.target.value)
+                : null;
+
+              setSelectedStoreId(nextId);
+            }}
+            disabled={loadingStores || saving}
+            className="h-9 min-w-[240px] px-3 text-[12px] rounded-lg border border-[#E2E8F0] bg-white focus:outline-none focus:border-[#4F46E5]"
+          >
+            <option value="">
+              {loadingStores ? "Loading branches..." : "Select Branch"}
+            </option>
+
+            {stores.map((store) => (
+              <option key={store.id} value={store.id}>
+               
+                {store.branch_name ? `  ${store.branch_name}` : ""}
+              </option>
+            ))}
+          </select>
+
+          {selectedStoreId && (
+            <span className="text-[11px] text-[#94A3B8]">
+              Adjustments affect stock only in the selected branch.
+            </span>
+          )}
+        </div>
+      </Card>
+
+      {/* ================================================================
           NO STORE
       ================================================================ */}
 
-      {!activeStoreId && (
+      {!selectedStoreId && (
 
         <Card>
 
@@ -1088,7 +1226,7 @@ export default function StockAdjustments({
             </p>
 
             <p className="text-[11px] text-[#94A3B8] mt-1">
-              Select a store from the top bar to manage stock adjustments.
+              Select a branch above to manage stock adjustments.
             </p>
 
           </div>
@@ -1182,6 +1320,7 @@ export default function StockAdjustments({
 
         <Table
           headers={[
+            "Branch",
             "Date",
             "Product",
             "SKU",
@@ -1243,6 +1382,14 @@ export default function StockAdjustments({
               (a) => (
 
                 <Tr key={a.id}>
+
+                  <Td>
+                    <span className="text-[11px] font-medium text-[#475569]">
+                      {stores.find((store) => Number(store.id) === Number(a.store_id))?.branch_name ||
+                        stores.find((store) => Number(store.id) === Number(a.store_id))?.store_name ||
+                        `Store #${a.store_id}`}
+                    </span>
+                  </Td>
 
                   <Td>
 
@@ -1417,6 +1564,21 @@ export default function StockAdjustments({
           <div className="space-y-4">
 
 
+            {/* BRANCH */}
+
+            <div>
+              <label className="text-[12px] font-medium text-[#374151] block mb-1">
+                Branch
+              </label>
+
+              <div className="w-full h-9 px-3 flex items-center rounded-lg border border-[#E2E8F0] bg-[#F8FAFC] text-[13px] text-[#475569]">
+                {stores.find((store) => Number(store.id) === Number(selectedStoreId))?.store_name || "Store"}
+                {stores.find((store) => Number(store.id) === Number(selectedStoreId))?.branch_name
+                  ? ` — ${stores.find((store) => Number(store.id) === Number(selectedStoreId))?.branch_name}`
+                  : ""}
+              </div>
+            </div>
+
             {/* PRODUCT */}
 
             <div>
@@ -1456,6 +1618,8 @@ export default function StockAdjustments({
                 <option value="">
                   {loadingProducts
                     ? "Loading products..."
+                    : products.length === 0
+                    ? "No inventory products available"
                     : "Select product"}
                 </option>
 

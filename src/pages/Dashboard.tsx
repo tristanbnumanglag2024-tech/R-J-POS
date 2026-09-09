@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import {
   AreaChart,
   Area,
@@ -15,7 +15,6 @@ import {
 } from "recharts";
 
 import {
-  Card,
   StatCard,
   Table,
   Tr,
@@ -27,10 +26,40 @@ import {
 
 const API_BASE = "https://sakuracareapi.site/rhea-pos-api";
 
+type DashboardCardProps = {
+  children: React.ReactNode;
+  className?: string;
+};
+
+function DashboardCard({
+  children,
+  className = "",
+}: DashboardCardProps) {
+  return (
+    <div
+      className={`rounded-2xl border border-[#E2E8F0] bg-white shadow-sm ${className}`}
+    >
+      {children}
+    </div>
+  );
+}
+
+
 interface DashboardProps {
-  activeStoreId: number | null;
+  /**
+   * Kept optional for backward compatibility with the existing parent.
+   * The dashboard now manages its own store filter.
+   */
+  activeStoreId?: number | null;
   currency?: string;
   onNavigate?: (page: string) => void;
+}
+
+interface Store {
+  id: number;
+  branch_name: string;
+  status?: string | null;
+  currency?: string | null;
 }
 
 interface Summary {
@@ -72,6 +101,7 @@ interface Transaction {
   total: number;
   payment: string;
   status: string;
+  refund_status?: string;
 }
 
 interface DashboardData {
@@ -82,6 +112,10 @@ interface DashboardData {
   byCategory: CategoryData[];
   topProducts: TopProduct[];
   recentTransactions: Transaction[];
+  refundSummary?: {
+    today_refund: number;
+    refunded_transactions: number;
+  };
 }
 
 const COLORS = [
@@ -113,7 +147,11 @@ function formatMoney(
 }
 
 function statusBadge(status: string) {
-  switch (status) {
+  const normalized = String(status ?? "")
+    .trim()
+    .toLowerCase();
+
+  switch (normalized) {
     case "completed":
       return (
         <Badge variant="success">
@@ -121,10 +159,26 @@ function statusBadge(status: string) {
         </Badge>
       );
 
+    case "approved":
     case "refunded":
       return (
-        <Badge variant="danger">
+        <Badge variant="success">
           Refunded
+        </Badge>
+      );
+
+    case "partial":
+    case "partially_refunded":
+      return (
+        <Badge variant="warning">
+          Partially Refunded
+        </Badge>
+      );
+
+    case "rejected":
+      return (
+        <Badge variant="danger">
+          Rejected
         </Badge>
       );
 
@@ -145,7 +199,7 @@ function statusBadge(status: string) {
     default:
       return (
         <Badge variant="neutral">
-          {status}
+          {status || "Unknown"}
         </Badge>
       );
   }
@@ -214,25 +268,35 @@ export default function Dashboard({
   const [error, setError] =
     useState("");
 
-  const loadDashboard = async () => {
-    if (!activeStoreId) {
-      setData(null);
-      return;
-    }
+  const [stores, setStores] =
+    useState<Store[]>([]);
 
+  const [selectedStoreId, setSelectedStoreId] =
+    useState<number | null>(null);
+
+  const [storesLoading, setStoresLoading] =
+    useState(true);
+
+  const [storeError, setStoreError] =
+    useState("");
+
+  const loadDashboard = async () => {
     try {
       setLoading(true);
       setError("");
 
+      const query = selectedStoreId
+        ? `?store_id=${encodeURIComponent(selectedStoreId)}`
+        : "";
+
       const response = await fetch(
-        `${API_BASE}/dashboard/stats.php?store_id=${encodeURIComponent(
-          activeStoreId
-        )}`,
+        `${API_BASE}/dashboard/stats.php${query}`,
         {
           method: "GET",
           headers: {
             Accept: "application/json",
           },
+          cache: "no-store",
         }
       );
 
@@ -245,7 +309,7 @@ export default function Dashboard({
         );
       }
 
-      setData(result.data);
+      setData(result.data as DashboardData);
     } catch (err) {
       console.error(
         "Dashboard error:",
@@ -265,8 +329,110 @@ export default function Dashboard({
   };
 
   useEffect(() => {
-    loadDashboard();
+    let mounted = true;
+
+    const loadStores = async () => {
+      try {
+        setStoresLoading(true);
+        setStoreError("");
+
+        const response = await fetch(
+          `${API_BASE}/stores/topbar.php`,
+          {
+            method: "GET",
+            headers: {
+              Accept: "application/json",
+            },
+            cache: "no-store",
+          }
+        );
+
+        const result = await response.json();
+
+        if (!response.ok || !result.success) {
+          throw new Error(
+            result.message ||
+              "Unable to load stores."
+          );
+        }
+
+        const activeStores: Store[] = (
+          Array.isArray(result.stores)
+            ? result.stores
+            : []
+        )
+          .filter(
+            (store: Store) =>
+              String(store.status ?? "active")
+                .trim()
+                .toLowerCase() === "active"
+          )
+          .map((store: Store) => ({
+            id: Number(store.id),
+            branch_name: String(store.branch_name ?? "").trim(),
+            status: store.status ?? "active",
+            currency: store.currency ?? null,
+          }))
+          .filter(
+            (store: Store) =>
+              Number.isInteger(store.id) &&
+              store.id > 0 &&
+              store.branch_name !== ""
+          );
+
+        if (!mounted) return;
+
+        setStores(activeStores);
+
+        // Preserve the existing parent-selected store on first load
+        // when it is still an active branch. Otherwise start with All Stores.
+        const parentStoreId =
+          Number(activeStoreId ?? 0);
+
+        if (
+          parentStoreId > 0 &&
+          activeStores.some(
+            (store) =>
+              store.id === parentStoreId
+          )
+        ) {
+          setSelectedStoreId(parentStoreId);
+        } else {
+          setSelectedStoreId(null);
+        }
+      } catch (err) {
+        console.error(
+          "Load dashboard stores error:",
+          err
+        );
+
+        if (!mounted) return;
+
+        setStores([]);
+        setStoreError(
+          err instanceof Error
+            ? err.message
+            : "Unable to load stores."
+        );
+        setSelectedStoreId(null);
+      } finally {
+        if (mounted) {
+          setStoresLoading(false);
+        }
+      }
+    };
+
+    loadStores();
+
+    return () => {
+      mounted = false;
+    };
   }, [activeStoreId]);
+
+  useEffect(() => {
+    if (storesLoading) return;
+    loadDashboard();
+  }, [selectedStoreId, storesLoading]);
 
   const chartData = useMemo(() => {
     if (!data) return [];
@@ -287,50 +453,16 @@ export default function Dashboard({
       ? "label"
       : "label";
 
-  if (!activeStoreId) {
-    return (
-      <div className="p-6">
-        <Card className="p-10 text-center">
-          <div className="w-12 h-12 mx-auto rounded-2xl bg-[#EEF2FF] text-[#4F46E5] flex items-center justify-center mb-4">
-            <svg
-              width="22"
-              height="22"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="1.8"
-            >
-              <path d="M3 21h18" />
-              <path d="M5 21V5l7-3 7 3v16" />
-              <path d="M9 9h1" />
-              <path d="M14 9h1" />
-              <path d="M9 13h1" />
-              <path d="M14 13h1" />
-            </svg>
-          </div>
-
-          <h3 className="text-[14px] font-semibold text-[#0F172A]">
-            No Store Selected
-          </h3>
-
-          <p className="text-[12px] text-[#64748B] mt-1">
-            Select a store to view its dashboard.
-          </p>
-        </Card>
-      </div>
-    );
-  }
-
   if (loading) {
     return (
       <div className="p-6">
-        <Card className="p-12 text-center">
+        <DashboardCard className="p-12 text-center">
           <div className="w-7 h-7 mx-auto border-2 border-[#E2E8F0] border-t-[#4F46E5] rounded-full animate-spin" />
 
           <p className="text-[12px] text-[#64748B] mt-3">
             Loading dashboard...
           </p>
-        </Card>
+        </DashboardCard>
       </div>
     );
   }
@@ -338,7 +470,7 @@ export default function Dashboard({
   if (error) {
     return (
       <div className="p-6">
-        <Card className="p-8 text-center">
+        <DashboardCard className="p-8 text-center">
           <div className="w-10 h-10 mx-auto rounded-full bg-red-50 text-red-500 flex items-center justify-center mb-3">
             !
           </div>
@@ -357,7 +489,7 @@ export default function Dashboard({
           >
             Try Again
           </button>
-        </Card>
+        </DashboardCard>
       </div>
     );
   }
@@ -369,13 +501,111 @@ export default function Dashboard({
   const summary = data.summary;
 
   return (
-    <div className="p-6 space-y-6 max-w-[1400px]">
+    <div className="p-4 sm:p-6 space-y-5 sm:space-y-6 max-w-[1400px]">
+      {/* =====================================================
+          DASHBOARD TOOLBAR
+      ===================================================== */}
+      <DashboardCard className="p-4 sm:p-5">
+        <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+          <div className="min-w-0">
+            <div className="flex items-center gap-2">
+              <div className="w-9 h-9 rounded-xl bg-[#EEF2FF] text-[#4F46E5] flex items-center justify-center shrink-0">
+                <svg
+                  width="18"
+                  height="18"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="1.8"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                >
+                  <path d="M3 21h18" />
+                  <path d="M5 21V5l7-3 7 3v16" />
+                  <path d="M9 9h1" />
+                  <path d="M14 9h1" />
+                  <path d="M9 13h1" />
+                  <path d="M14 13h1" />
+                </svg>
+              </div>
+
+              <div className="min-w-0">
+                <h2 className="text-[15px] font-semibold text-[#0F172A]">
+                  Dashboard
+                </h2>
+                <p className="text-[11px] text-[#64748B] mt-0.5 truncate">
+                  {selectedStoreId
+                    ? "Viewing performance for the selected branch"
+                    : "Viewing consolidated performance across all branches"}
+                </p>
+              </div>
+            </div>
+          </div>
+
+          <div className="w-full lg:w-[280px] shrink-0">
+            <label
+              htmlFor="dashboard-store-filter"
+              className="block text-[10px] font-semibold uppercase tracking-[0.08em] text-[#64748B] mb-1.5"
+            >
+              Branch
+            </label>
+
+            <div className="relative">
+              <select
+                id="dashboard-store-filter"
+                value={selectedStoreId ?? ""}
+                onChange={(event) => {
+                  const value = event.target.value;
+                  setSelectedStoreId(
+                    value === "" ? null : Number(value)
+                  );
+                }}
+                disabled={storesLoading}
+                className="w-full h-10 appearance-none rounded-xl border border-[#E2E8F0] bg-white px-3 pr-10 text-[12px] font-medium text-[#0F172A] outline-none transition focus:border-[#818CF8] focus:ring-2 focus:ring-[#EEF2FF] disabled:bg-[#F8FAFC] disabled:text-[#94A3B8]"
+              >
+                <option value="">
+                  All Branches
+                </option>
+
+                {stores.map((store) => (
+                  <option
+                    key={store.id}
+                    value={store.id}
+                  >
+                    {store.branch_name}
+                  </option>
+                ))}
+              </select>
+
+              <svg
+                className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-[#64748B]"
+                width="16"
+                height="16"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="1.8"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              >
+                <path d="m6 9 6 6 6-6" />
+              </svg>
+            </div>
+
+            {storeError && (
+              <p className="text-[10px] text-red-500 mt-1.5">
+                {storeError}
+              </p>
+            )}
+          </div>
+        </div>
+      </DashboardCard>
 
       {/* =====================================================
           STAT CARDS
       ===================================================== */}
 
-      <div className="grid grid-cols-2 lg:grid-cols-5 gap-4">
+      <div className="grid grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-4">
 
         <StatCard
           label="Today's Sales"
@@ -383,7 +613,14 @@ export default function Dashboard({
             summary.today_sales,
             currency
           )}
-          sub={`${summary.today_transactions} transactions`}
+          sub={
+            (data.refundSummary?.today_refund ?? 0) > 0
+              ? `${summary.today_transactions} transactions · ${formatMoney(
+                  data.refundSummary?.today_refund ?? 0,
+                  currency
+                )} refunded`
+              : `${summary.today_transactions} transactions`
+          }
           trend={trend(summary.sales_trend)}
           icon={
             <svg
@@ -405,6 +642,34 @@ export default function Dashboard({
           }
           accent="#4F46E5"
           iconBg="#EEF2FF"
+        />
+
+        <StatCard
+          label="Today's Refunds"
+          value={formatMoney(
+            data.refundSummary?.today_refund ?? 0,
+            currency
+          )}
+          sub={`${
+            data.refundSummary?.refunded_transactions ?? 0
+          } approved today`}
+          icon={
+            <svg
+              width="18"
+              height="18"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="1.8"
+            >
+              <path d="M9 14l-3-3 3-3" />
+              <path d="M6 11h8a4 4 0 014 4v1" />
+              <path d="M15 10l3 3-3 3" />
+              <path d="M18 13h-2a4 4 0 00-4-4H6" />
+            </svg>
+          }
+          accent="#EF4444"
+          iconBg="#FEF2F2"
         />
 
         <StatCard
@@ -517,7 +782,7 @@ export default function Dashboard({
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
 
-        <Card className="lg:col-span-2 p-5">
+        <DashboardCard className="lg:col-span-2 p-5">
 
           <div className="flex items-center justify-between mb-4">
 
@@ -531,6 +796,7 @@ export default function Dashboard({
               </p>
             </div>
 
+            <div className="shrink-0 overflow-x-auto">
             <Tabs
               tabs={[
                 "Today",
@@ -540,6 +806,7 @@ export default function Dashboard({
               active={chartTab}
               onChange={setChartTab}
             />
+            </div>
           </div>
 
           <ResponsiveContainer
@@ -632,9 +899,9 @@ export default function Dashboard({
               />
             </AreaChart>
           </ResponsiveContainer>
-        </Card>
+        </DashboardCard>
 
-        <Card className="p-5">
+        <DashboardCard className="p-5">
 
           <div className="mb-4">
             <h3 className="text-[14px] font-semibold text-[#0F172A]">
@@ -731,7 +998,7 @@ export default function Dashboard({
               </div>
             </>
           )}
-        </Card>
+        </DashboardCard>
       </div>
 
       {/* =====================================================
@@ -740,7 +1007,7 @@ export default function Dashboard({
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
 
-        <Card className="p-5">
+        <DashboardCard className="p-5">
           <SectionHeader title="Top Selling Products" />
 
           {data.topProducts.length === 0 ? (
@@ -803,9 +1070,9 @@ export default function Dashboard({
               )}
             </div>
           )}
-        </Card>
+        </DashboardCard>
 
-        <Card className="p-5">
+        <DashboardCard className="p-5">
           <SectionHeader title="Weekly Sales Comparison" />
 
           <ResponsiveContainer
@@ -876,14 +1143,14 @@ export default function Dashboard({
               />
             </BarChart>
           </ResponsiveContainer>
-        </Card>
+        </DashboardCard>
       </div>
 
       {/* =====================================================
           RECENT TRANSACTIONS
       ===================================================== */}
 
-      <Card>
+      <DashboardCard>
 
         <div className="px-5 py-4 border-b border-[#F1F5F9] flex items-center justify-between">
 
@@ -912,9 +1179,9 @@ export default function Dashboard({
             No transactions yet
           </div>
         ) : (
+          <div className="overflow-x-auto">
           <Table
-            headers={[
-              "Receipt #",
+            headers={["Receipt #",
               "Time",
               "Cashier",
               "Customer",
@@ -922,8 +1189,7 @@ export default function Dashboard({
               "Total",
               "Payment",
               "Status",
-              "",
-            ]}
+              "",]}
           >
             {data.recentTransactions.map(
               (transaction) => (
@@ -997,8 +1263,9 @@ export default function Dashboard({
               )
             )}
           </Table>
+          </div>
         )}
-      </Card>
+      </DashboardCard>
     </div>
   );
 }

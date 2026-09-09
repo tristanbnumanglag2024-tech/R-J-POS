@@ -14,16 +14,8 @@ import {
 
 const API_BASE = "https://sakuracareapi.site/rhea-pos-api";
 
-interface ActiveStore {
-  id: number;
-  store_name?: string;
-  branch_name?: string;
-}
-
 interface Supplier {
   id: number;
-  store_id: number;
-
   name: string;
   contact: string;
   email: string;
@@ -42,10 +34,6 @@ interface Supplier {
   updated_at?: string;
 }
 
-interface SuppliersProps {
-  activeStore?: ActiveStore | null;
-}
-
 interface SupplierForm {
   name: string;
   contact: string;
@@ -62,7 +50,7 @@ function fmt(n: number) {
   });
 }
 
-export default function Suppliers({ activeStore }: SuppliersProps) {
+export default function Suppliers() {
   const [list, setList] = useState<Supplier[]>([]);
 
   const [search, setSearch] = useState("");
@@ -108,17 +96,12 @@ export default function Suppliers({ activeStore }: SuppliersProps) {
   */
 
   const loadSuppliers = async () => {
-    if (!activeStore?.id) {
-      setList([]);
-      return;
-    }
-
     try {
       setLoading(true);
       setError("");
 
       const response = await fetch(
-        `${API_BASE}/suppliers/list.php?store_id=${activeStore.id}`
+        `${API_BASE}/suppliers/list.php`
       );
 
       const data = await response.json();
@@ -156,7 +139,7 @@ export default function Suppliers({ activeStore }: SuppliersProps) {
 
   useEffect(() => {
     loadSuppliers();
-  }, [activeStore?.id]);
+  }, []);
 
   /*
   |--------------------------------------------------------------------------
@@ -241,11 +224,6 @@ export default function Suppliers({ activeStore }: SuppliersProps) {
 
   const handleCreate = async () => {
 
-    if (!activeStore?.id) {
-      setError("Please select a store first.");
-      return;
-    }
-
     if (!form.name.trim()) {
       setError("Supplier name is required.");
       return;
@@ -266,8 +244,6 @@ export default function Suppliers({ activeStore }: SuppliersProps) {
           },
 
           body: JSON.stringify({
-            store_id: activeStore.id,
-
             name: form.name.trim(),
             contact: form.contact.trim(),
             email: form.email.trim(),
@@ -315,7 +291,7 @@ export default function Suppliers({ activeStore }: SuppliersProps) {
 
   const handleUpdate = async () => {
 
-    if (!activeStore?.id || !detail) {
+    if (!detail) {
       return;
     }
 
@@ -340,8 +316,6 @@ export default function Suppliers({ activeStore }: SuppliersProps) {
 
           body: JSON.stringify({
             id: detail.id,
-
-            store_id: activeStore.id,
 
             name: form.name.trim(),
             contact: form.contact.trim(),
@@ -390,10 +364,6 @@ export default function Suppliers({ activeStore }: SuppliersProps) {
 
   const handleDelete = async (supplier: Supplier) => {
 
-    if (!activeStore?.id) {
-      return;
-    }
-
     const confirmed = window.confirm(
       `Deactivate "${supplier.name}"?`
     );
@@ -418,7 +388,6 @@ export default function Suppliers({ activeStore }: SuppliersProps) {
 
           body: JSON.stringify({
             id: supplier.id,
-            store_id: activeStore.id,
           }),
         }
       );
@@ -472,37 +441,6 @@ export default function Suppliers({ activeStore }: SuppliersProps) {
 
   /*
   |--------------------------------------------------------------------------
-  | NO STORE
-  |--------------------------------------------------------------------------
-  */
-
-  if (!activeStore?.id) {
-
-    return (
-      <div className="p-6">
-
-        <Card className="p-10 text-center">
-
-          <div className="mx-auto w-12 h-12 rounded-xl bg-[#EEF2FF] flex items-center justify-center mb-3">
-            <span className="text-xl">🏪</span>
-          </div>
-
-          <h3 className="text-[14px] font-semibold text-[#0F172A]">
-            No Store Selected
-          </h3>
-
-          <p className="text-[12px] text-[#64748B] mt-1">
-            Please select a store from the store selector above.
-          </p>
-
-        </Card>
-
-      </div>
-    );
-  }
-
-  /*
-  |--------------------------------------------------------------------------
   | UI
   |--------------------------------------------------------------------------
   */
@@ -523,12 +461,8 @@ export default function Suppliers({ activeStore }: SuppliersProps) {
           <p className="text-[12px] text-[#64748B] mt-0.5">
 
             {list.length} vendors
-
             {" • "}
-
-            {activeStore.branch_name ||
-              activeStore.store_name ||
-              `Store #${activeStore.id}`}
+            Centralized suppliers
 
           </p>
 
@@ -602,7 +536,7 @@ export default function Suppliers({ activeStore }: SuppliersProps) {
             <p className="text-[11px] text-[#94A3B8] mt-1">
               {search
                 ? "Try another search."
-                : "Add your first supplier for this store."}
+                : "Add your first centralized supplier."}
             </p>
 
           </div>

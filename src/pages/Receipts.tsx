@@ -1,6 +1,5 @@
-import { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import {
-  Card,
   Badge,
   Button,
   SearchBar,
@@ -13,6 +12,24 @@ import {
 
 const API_BASE = "https://sakuracareapi.site/rhea-pos-api";
 const PER_PAGE = 8;
+
+type ReceiptCardProps = {
+  children: React.ReactNode;
+  className?: string;
+};
+
+function ReceiptCard({
+  children,
+  className = "",
+}: ReceiptCardProps) {
+  return (
+    <div
+      className={`rounded-2xl border border-[#E2E8F0] bg-white shadow-sm ${className}`}
+    >
+      {children}
+    </div>
+  );
+}
 
 type ReceiptStatus = "completed" | "refunded" | "cancelled" | string;
 
@@ -33,6 +50,8 @@ interface ReceiptRow {
   payment_method: string;
   amount_paid: number;
   status: ReceiptStatus;
+  refund_status?: string | null;
+  refund_total?: number;
   created_at: string;
 }
 
@@ -79,17 +98,40 @@ function fmt(value: number | string | null | undefined) {
 }
 
 function statusBadge(status: string) {
-  const normalized = status.toLowerCase();
+  const normalized = String(status ?? "").trim().toLowerCase();
 
   if (normalized === "completed") {
     return <Badge variant="success">Completed</Badge>;
   }
 
-  if (normalized === "refunded") {
+  if (normalized === "refunded" || normalized === "approved") {
     return <Badge variant="danger">Refunded</Badge>;
   }
 
-  return <Badge variant="neutral">{status}</Badge>;
+  if (
+    normalized === "partial" ||
+    normalized === "partially_refunded"
+  ) {
+    return <Badge variant="warning">Partially Refunded</Badge>;
+  }
+
+  if (normalized === "pending") {
+    return <Badge variant="warning">Pending</Badge>;
+  }
+
+  if (normalized === "rejected") {
+    return <Badge variant="warning">Rejected</Badge>;
+  }
+
+  if (normalized === "cancelled" || normalized === "voided") {
+    return (
+      <Badge variant="neutral">
+        {normalized === "voided" ? "Voided" : "Cancelled"}
+      </Badge>
+    );
+  }
+
+  return <Badge variant="neutral">{status || "Unknown"}</Badge>;
 }
 
 function paymentLabel(value: string) {
@@ -312,6 +354,11 @@ function ReceiptPrint({
             <div>
               <strong>Date:</strong> ${escapeHtml(receipt.created_at)}
             </div>
+            <div>
+              <strong>Status:</strong> ${escapeHtml(
+                receipt.refund_status || receipt.status || "unknown"
+              )}
+            </div>
 
             <div class="meta">
               <div><span>Cashier</span><strong>${escapeHtml(receipt.cashier_name || "—")}</strong></div>
@@ -343,6 +390,14 @@ function ReceiptPrint({
                 <span>Tax</span>
                 <span>${fmt(receipt.tax)}</span>
               </div>
+              ${
+                Number(receipt.refund_total || 0) > 0
+                  ? `<div class="line">
+                      <span>Refunded</span>
+                      <span>- ${fmt(receipt.refund_total)}</span>
+                    </div>`
+                  : ""
+              }
               <div class="line grand">
                 <span>TOTAL</span>
                 <span>${fmt(receipt.total)}</span>
@@ -397,13 +452,7 @@ function escapeHtml(value: string) {
     .replace(/'/g, "&#039;");
 }
 
-interface ReceiptsProps {
-  activeStoreId: number | null;
-}
-
-export default function Receipts({
-  activeStoreId,
-}: ReceiptsProps) {
+export default function Receipts() {
   const [search, setSearch] =
     useState("");
 
@@ -412,6 +461,12 @@ export default function Receipts({
 
   const [payFilter, setPayFilter] =
     useState("");
+
+  const [branchFilter, setBranchFilter] =
+    useState("");
+
+  const [branches, setBranches] =
+    useState<{ value: string; label: string }[]>([]);
 
   const [page, setPage] =
     useState(1);
@@ -437,6 +492,60 @@ export default function Receipts({
   const selectedId =
     selected?.id ?? null;
 
+  useEffect(() => {
+    const loadBranches = async () => {
+      try {
+        const response = await fetch(
+          `${API_BASE}/stores/topbar.php`,
+          {
+            headers: {
+              Accept: "application/json",
+            },
+            cache: "no-store",
+          }
+        );
+
+        const data = await readJson<any>(response);
+
+        if (!response.ok || !data.success) {
+          return;
+        }
+
+        const rows = Array.isArray(data.stores)
+          ? data.stores
+          : Array.isArray(data.data)
+            ? data.data
+            : [];
+
+        const options = rows
+          .filter(
+            (store: any) =>
+              Number(store.id) > 0 &&
+              String(store.branch_name ?? "").trim() !== ""
+          )
+          .map((store: any) => ({
+            value: String(store.id),
+            label: String(store.branch_name).trim(),
+          }));
+
+        const unique = new Map<string, string>();
+        options.forEach((option: { value: string; label: string }) => {
+          unique.set(option.value, option.label);
+        });
+
+        setBranches(
+          Array.from(unique.entries()).map(
+            ([value, label]) => ({ value, label })
+          )
+        );
+      } catch (err) {
+        console.error("Load receipt branches error:", err);
+      }
+    };
+
+    loadBranches();
+  }, []);
+
   const loadReceipts = async (
     requestedPage = page
   ) => {
@@ -449,8 +558,8 @@ export default function Receipts({
         per_page: String(PER_PAGE),
       });
 
-      if (activeStoreId !== null && activeStoreId > 0) {
-        params.set("store_id", String(activeStoreId));
+      if (branchFilter && Number(branchFilter) > 0) {
+        params.set("store_id", String(Number(branchFilter)));
       }
 
       if (search.trim()) {
@@ -610,7 +719,7 @@ export default function Receipts({
     search,
     statusFilter,
     payFilter,
-    activeStoreId,
+    branchFilter,
   ]);
 
   useEffect(() => {
@@ -666,8 +775,18 @@ export default function Receipts({
       )}
 
       {/* Filters */}
-      <Card className="p-4">
+      <ReceiptCard className="p-4">
         <div className="flex flex-wrap items-center gap-3">
+          <Select
+            value={branchFilter}
+            onChange={(value) => {
+              setBranchFilter(value);
+              setPage(1);
+            }}
+            placeholder="All Branches"
+            options={branches}
+          />
+
           <SearchBar
             value={search}
             onChange={(value) => {
@@ -712,7 +831,8 @@ export default function Receipts({
 
           {(search ||
             statusFilter ||
-            payFilter) && (
+            payFilter ||
+            branchFilter) && (
             <button
               type="button"
               onClick={() => {
@@ -731,12 +851,12 @@ export default function Receipts({
             {total.toLocaleString()} receipts
           </span>
         </div>
-      </Card>
+      </ReceiptCard>
 
       <div className="grid grid-cols-1 xl:grid-cols-5 gap-4">
         {/* Receipt list */}
         <div className="xl:col-span-2">
-          <Card>
+          <ReceiptCard>
             {loading ? (
               <div className="p-10 text-center text-[13px] text-[#64748B]">
                 Loading receipts...
@@ -750,6 +870,7 @@ export default function Receipts({
                 <Table
                   headers={[
                     "Receipt",
+                    "Branch",
                     "Date",
                     "Total",
                     "Status",
@@ -799,6 +920,12 @@ export default function Receipts({
                           </Td>
 
                           <Td>
+                            <span className="text-[11px] text-[#475569]">
+                              {receipt.branch_name || "—"}
+                            </span>
+                          </Td>
+
+                          <Td>
                             <span className="text-[11px] text-[#64748B]">
                               {dateTime.date}{" "}
                               {dateTime.time}
@@ -806,16 +933,31 @@ export default function Receipts({
                           </Td>
 
                           <Td>
-                            <span className="text-[12px] font-semibold text-[#0F172A]">
-                              {fmt(
-                                receipt.total
+                            <div>
+                              <span
+                                className={`text-[12px] font-semibold ${
+                                  Number(receipt.refund_total || 0) > 0
+                                    ? "text-red-600"
+                                    : "text-[#0F172A]"
+                                }`}
+                              >
+                                {fmt(receipt.total)}
+                              </span>
+
+                              {Number(receipt.refund_total || 0) > 0 && (
+                                <p className="text-[9px] text-red-500 mt-0.5">
+                                  Refunded {fmt(receipt.refund_total)}
+                                </p>
                               )}
-                            </span>
+                            </div>
                           </Td>
 
                           <Td>
                             {statusBadge(
-                              receipt.status
+                              receipt.refund_status &&
+                                receipt.refund_status !== "none"
+                                ? receipt.refund_status
+                                : receipt.status
                             )}
                           </Td>
 
@@ -843,19 +985,19 @@ export default function Receipts({
                 />
               </>
             )}
-          </Card>
+          </ReceiptCard>
         </div>
 
         {/* Receipt detail */}
         <div className="xl:col-span-3">
           {detailLoading ? (
-            <Card className="flex items-center justify-center h-64">
+            <ReceiptCard className="flex items-center justify-center h-64">
               <p className="text-[13px] text-[#94A3B8]">
                 Loading receipt...
               </p>
-            </Card>
+            </ReceiptCard>
           ) : selected ? (
-            <Card className="overflow-hidden">
+            <ReceiptCard className="overflow-hidden">
               <div className="px-5 py-3 border-b border-[#F1F5F9] flex items-center justify-between bg-[#F8FAFC]">
                 <span className="text-[12px] font-semibold text-[#64748B] uppercase tracking-wider">
                   Receipt Preview
@@ -874,16 +1016,7 @@ export default function Receipts({
                     Email
                   </Button>
 
-                  {selected.status ===
-                    "completed" && (
-                    <Button
-                      variant="danger"
-                      size="sm"
-                      disabled
-                    >
-                      Refund
-                    </Button>
-                  )}
+                 
                 </div>
               </div>
 
@@ -1015,7 +1148,10 @@ export default function Receipts({
                         Status
                       </span>
                       {statusBadge(
-                        selected.status
+                        selected.refund_status &&
+                          selected.refund_status !== "none"
+                          ? selected.refund_status
+                          : selected.status
                       )}
                     </div>
                   </div>
@@ -1154,6 +1290,13 @@ export default function Receipts({
                     </span>
                   </div>
 
+                  {Number(selected.refund_total || 0) > 0 && (
+                    <div className="flex justify-between text-red-600 font-medium">
+                      <span>Refunded</span>
+                      <span>- {fmt(selected.refund_total)}</span>
+                    </div>
+                  )}
+
                   <div className="flex justify-between font-bold text-[15px] pt-2 border-t-2 border-[#0F172A]">
                     <span>TOTAL</span>
                     <span className="text-[#4F46E5]">
@@ -1228,13 +1371,13 @@ export default function Receipts({
                 )}
 
               </div>
-            </Card>
+            </ReceiptCard>
           ) : (
-            <Card className="flex items-center justify-center h-64">
+            <ReceiptCard className="flex items-center justify-center h-64">
               <p className="text-[13px] text-[#94A3B8]">
                 Select a receipt to preview
               </p>
-            </Card>
+            </ReceiptCard>
           )}
         </div>
       </div>

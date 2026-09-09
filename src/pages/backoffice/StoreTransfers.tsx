@@ -629,7 +629,7 @@ function ReceiveModal({
         )}
 
         <div className="rounded-xl bg-[#F8FAFC] border border-[#E2E8F0] px-4 py-3">
-          <p className="text-[10px] text-[#94A3B8]">Route</p>
+          <p className="text-[10px] text-[#94A3B8]">Destination receipt</p>
           <p className="text-[12px] font-semibold text-[#0F172A] mt-0.5">
             {transfer.fromStore} <span className="text-[#6366F1]">→</span>{" "}
             {transfer.toStore}
@@ -706,7 +706,7 @@ function ReceiveModal({
             </tbody>
             <tfoot className="border-t border-[#E2E8F0] bg-[#F8FAFC]">
               <tr>
-                <td colSpan={3} className="px-3 py-2.5 text-[11px] font-semibold text-[#64748B]">
+                <td colSpan={4} className="px-3 py-2.5 text-[11px] font-semibold text-[#64748B]">
                   Receive now
                 </td>
                 <td className="px-3 py-2.5 text-right text-[13px] font-bold text-[#4F46E5]">
@@ -752,11 +752,12 @@ function DetailModal({
   const [error, setError] = useState("");
 
   const isSource = transfer.fromStoreId === activeStoreId;
-  const isDestination = transfer.toStoreId === activeStoreId;
   const canSend = isSource && transfer.status === "pending";
+  // Receiving is available directly from the transfer record.
+  // The destination store is taken from transfer.toStoreId, so the user
+  // does not need to switch the global/top-bar store first.
   const canReceive =
-    isDestination &&
-    (transfer.status === "in_transit" || transfer.status === "partial");
+    transfer.status === "in_transit" || transfer.status === "partial";
   const canCancel = isSource && transfer.status === "pending";
 
   const sendTransfer = async () => {
@@ -1107,26 +1108,31 @@ export default function StoreTransfers({
     setLoadingProducts(true);
     try {
       const data = await fetchJson(
-        `${API_BASE}/products/list.php?store_id=${encodeURIComponent(
+        `${API_BASE}/inventory/inventory.php?store_id=${encodeURIComponent(
           activeStoreId
         )}`
       );
 
-      const nextProducts: Product[] = Array.isArray(data.products)
+      const rawProducts = Array.isArray(data.items)
+        ? data.items
+        : Array.isArray(data.products)
         ? data.products
-            .filter(
-              (product: any) =>
-                Number(product.store_id) === Number(activeStoreId) &&
-                (!product.status || product.status === "active")
-            )
-            .map((product: any) => ({
-              id: Number(product.id),
-              name: product.name || "",
-              sku: product.sku || "",
-              stock: Number(product.stock || 0),
-              store_id: Number(product.store_id),
-            }))
         : [];
+
+      const nextProducts: Product[] = rawProducts
+        .map((product: any) => ({
+          id: Number(product.product_id ?? product.id ?? 0),
+          name: product.name || product.product_name || "",
+          sku: product.sku || "",
+          stock: Number(product.stock || 0),
+          store_id: Number(product.store_id ?? activeStoreId),
+        }))
+        .filter(
+          (product: Product) =>
+            product.id > 0 &&
+            product.store_id === Number(activeStoreId) &&
+            product.stock > 0
+        );
 
       setProducts(nextProducts);
     } finally {
