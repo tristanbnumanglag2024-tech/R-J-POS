@@ -16,7 +16,7 @@ import Categories from "./pages/Categories";
 import Inventory from "./pages/Inventory";
 import Sales from "./pages/Sales";
 import Receipts from "./pages/Receipts";
-
+import StoreTransfers from "./pages/backoffice/StoreTransfers";
 import Customers from "./pages/backoffice/Customers";
 import Employees from "./pages/backoffice/Employees";
 import Discounts from "./pages/backoffice/Discounts";
@@ -55,6 +55,7 @@ type BOPage =
   | "dashboard"
   | "sales"
   | "receipts"
+  | "store-transfers"
   | "products"
   | "categories"
   | "inventory"
@@ -114,6 +115,11 @@ const PAGE_META: Record<
   receipts: {
     title: "Receipts",
     subtitle: "Search and manage receipts",
+  },
+
+  "store-transfers": {
+    title: "Store Transfers",
+    subtitle: "Transfer stock between stores",
   },
 
   products: {
@@ -211,6 +217,30 @@ type CartItem = {
 // ============================================================
 
 const API_BASE = "https://sakuracareapi.site/rhea-pos-api";
+
+// ============================================================
+// AUTHENTICATED ADMIN USER ID
+// ============================================================
+// Settings is centralized by user_id, so always read the
+// currently logged-in admin ID from the same admin session
+// already used by this App.
+function getAuthenticatedAdminUserId(): number | null {
+  try {
+    const savedAdmin = localStorage.getItem("admin");
+
+    if (!savedAdmin) {
+      return null;
+    }
+
+    const parsed = JSON.parse(savedAdmin);
+    const id = Number(parsed?.id);
+
+    return Number.isInteger(id) && id > 0 ? id : null;
+  } catch (error) {
+    console.error("Unable to read authenticated admin ID:", error);
+    return null;
+  }
+}
 
 // ============================================================
 // APP
@@ -574,8 +604,9 @@ const [mode, setMode] = useState<AppMode>(() => {
           setMode("back-office")
         }
 
-      
-        
+        onSwitchToPOS={() =>
+          setMode("pos-login")
+        }
       />
     );
   }
@@ -608,7 +639,108 @@ const [mode, setMode] = useState<AppMode>(() => {
   // POS
   // ==========================================================
 
-  
+  if (mode === "pos") {
+
+    // LOCK SCREEN
+
+    if (posView === "locked") {
+
+      return (
+        <POSLockScreen
+          cashier={cashier}
+          onUnlock={() =>
+            setPOSView("main")
+          }
+        />
+      );
+    }
+
+    // PAYMENT
+
+    if (posView === "payment") {
+
+      return (
+        <POSPayment
+          total={total}
+          subtotal={subtotal}
+          discount={discount}
+          tax={tax}
+          customer={customer}
+
+          onComplete={(
+            method,
+            paid,
+            chg
+          ) =>
+            handlePayComplete(
+              method,
+              paid,
+              chg
+            )
+          }
+
+          onBack={() =>
+            setPOSView("main")
+          }
+
+          onCancel={() =>
+            setPOSView("main")
+          }
+        />
+      );
+    }
+
+    // SUCCESS
+
+    if (posView === "success") {
+
+      return (
+        <POSSuccess
+          receiptNo={receiptNo}
+          total={total}
+          method={payMethod}
+          amountPaid={amountPaid}
+          change={changeGiven}
+          customer={customer}
+          cashier={cashier}
+
+          cartItems={cart.map(
+            (item) => ({
+              name: item.name,
+              qty: item.qty,
+              price: item.price,
+            })
+          )}
+
+          subtotal={subtotal}
+          discount={discount}
+          tax={tax}
+
+          onNewSale={
+            handleNewSale
+          }
+        />
+      );
+    }
+
+    // MAIN POS
+
+    return (
+      <POSMain
+        cashier={cashier}
+
+        onPay={handlePOSPay}
+
+        onLock={() =>
+          setPOSView("locked")
+        }
+
+        onLogout={() =>
+          setMode("pos-login")
+        }
+      />
+    );
+  }
 
   // ==========================================================
   // BACK OFFICE PAGE META
@@ -661,10 +793,7 @@ case "add-product":
   );
 
      case "categories":
-  return (
-    <Categories
-    />
-  );
+        return <Categories />;
 
       case "inventory":
   return (
@@ -683,7 +812,18 @@ case "add-product":
   );
 
       case "receipts":
-        return <Receipts />;
+        return (
+          <Receipts
+            activeStoreId={selectedStore?.id ?? null}
+          />
+        );
+
+      case "store-transfers":
+        return (
+          <StoreTransfers
+            activeStoreId={selectedStore?.id ?? null}
+          />
+        );
 
       case "customers":
   return (
@@ -723,7 +863,7 @@ case "add-product":
  case "suppliers":
   return (
     <Suppliers
-   
+      activeStore={selectedStore}
     />
   );
 
@@ -760,7 +900,11 @@ case "add-product":
   );
 
       case "settings":
-        return <Settings />;
+        return (
+          <Settings
+            userId={getAuthenticatedAdminUserId()}
+          />
+        );
 
       default:
         return null;
