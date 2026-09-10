@@ -779,29 +779,71 @@ function GenerateReceiptModal({
     try {
       setSaving(true);
 
-      await fetchJson(
-        `${API_BASE}/store_transfers/store_transfers_create.php`,
-        {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            Accept: "application/json",
-          },
-          body: JSON.stringify({
-            from_store_id: Number(fromStoreId),
-            to_store_id: Number(toStoreId),
-            created_by: currentAdminName(),
-            notes: notes.trim(),
-            items: lines.map((l) => ({
-              product_id: l.id,
-              quantity: l.qty,
-            })),
-          }),
-        }
-      );
+      const created = await fetchJson(
+  `${API_BASE}/store_transfers/store_transfers_create.php`,
+  {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Accept: "application/json",
+    },
+    body: JSON.stringify({
+      from_store_id: Number(fromStoreId),
+      to_store_id: Number(toStoreId),
+      created_by: currentAdminName(),
+      notes: notes.trim(),
+      items: lines.map((l) => ({
+        product_id: l.id,
+        quantity: l.qty,
+      })),
+    }),
+  }
+);
 
-      await onCreated();
-      onClose();
+const transferId = Number(
+  created?.transfer_id ??
+  created?.transfer?.id ??
+  created?.id ??
+  0
+);
+
+if (transferId <= 0) {
+  throw new Error(
+    "Delivery Receipt was created, but the transfer ID was not returned. Auto-dispatch could not be completed."
+  );
+}
+
+/*
+ * AUTO DISPATCH
+ *
+ * Generate Receipt immediately dispatches the transfer.
+ * Source = FROM branch.
+ *
+ * dispatch.php:
+ * - deducts FROM stock
+ * - creates transfer_out inventory movement
+ * - changes status pending -> in_transit
+ */
+await fetchJson(
+  `${API_BASE}/store_transfers/store_transfers_dispatch.php`,
+  {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Accept: "application/json",
+    },
+    body: JSON.stringify({
+      transfer_id: transferId,
+      store_id: Number(fromStoreId),
+      user: currentAdminName(),
+    }),
+  }
+);
+
+await onCreated();
+onClose();
+
+    
     } catch (e) {
       setError(
         e instanceof Error
