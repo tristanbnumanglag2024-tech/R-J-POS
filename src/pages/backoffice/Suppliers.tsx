@@ -45,7 +45,7 @@ interface SupplierForm {
 }
 
 function fmt(n: number) {
-  return "$" + Number(n || 0).toLocaleString("en-US", {
+  return "₱" + Number(n || 0).toLocaleString("en-US", {
     minimumFractionDigits: 0,
   });
 }

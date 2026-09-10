@@ -497,7 +497,7 @@ export default function Discounts({
               Number(
                 discount.store_id
               ) ===
-              Number(activeStoreId)
+              Number(selectedStoreId)
           );
 
         setList(
