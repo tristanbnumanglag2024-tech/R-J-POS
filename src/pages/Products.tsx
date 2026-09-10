@@ -2427,13 +2427,16 @@ export default function Products({
           </div>
         ) : (
           <>
-            <Table
-              headers={
-                tableScope === "all"
-                  ? ["Product", "SKU", "Cost (Average)", "Stock", "Status", "Actions"]
-                  : ["Branch", "Product", "SKU", "Barcode", "Category", "Price", "Cost (Average)", "Stock", "Status", "Actions"]
-              }
+            <div
+              className="w-full overflow-x-auto [&_table]:w-full [&_table]:min-w-[1280px] [&_table]:table-fixed"
             >
+              <Table
+                headers={
+                  tableScope === "all"
+                    ? ["Product", "SKU", "Cost (Average)", "Stock", "Status", "Actions"]
+                    : ["Branch", "Product", "SKU", "Barcode", "Category", "Price", "Cost (Average)", "Stock", "Status", "Actions"]
+                }
+              >
 
               {paged.map((product) => (
 
@@ -2722,7 +2725,8 @@ export default function Products({
 
               ))}
 
-            </Table>
+              </Table>
+            </div>
 
             <Pagination
               page={page}

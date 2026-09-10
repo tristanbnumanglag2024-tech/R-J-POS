@@ -188,7 +188,7 @@ export default function DeliveryReport() {
     <div className="p-5 sm:p-6 space-y-4">
       <div className="flex flex-col sm:flex-row sm:items-end sm:justify-between gap-3">
         <div>
-          <h1 className="text-[18px] font-semibold text-[#0F172A]">Delivery Receipts</h1>
+          <h1 className="text-[18px] font-semibold text-[#0F172A]">Delivery Record</h1>
           <p className="text-[11px] text-[#64748B] mt-0.5">
             Record incoming deliveries and receiving details.
           </p>

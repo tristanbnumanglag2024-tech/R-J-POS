@@ -66,48 +66,47 @@ type Transfer = {
 
 type CreateLine = Product & { qty: number };
 
-interface StoreTransfersProps {
+interface Props {
   activeStoreId: number | null;
 }
 
-function fmt(value: number) {
-  return Number(value || 0).toLocaleString("en-US", {
+function fmt(v: number) {
+  return Number(v || 0).toLocaleString("en-US", {
     maximumFractionDigits: 2,
   });
 }
 
-function storeLabel(store: Store) {
-  return store.branch_name || store.store_name || `Store #${store.id}`;
+function storeLabel(s: Store) {
+  return s.branch_name || s.store_name || `Store #${s.id}`;
 }
 
 function currentAdminName() {
   try {
     const raw = localStorage.getItem("admin");
     if (!raw) return "Admin User";
-    const admin = JSON.parse(raw);
-    return (
-      admin?.full_name ||
-      admin?.username ||
-      admin?.email ||
-      "Admin User"
-    );
+    const a = JSON.parse(raw);
+    return a?.full_name || a?.username || a?.email || "Admin User";
   } catch {
     return "Admin User";
   }
 }
 
+function statusLabel(status: TransferStatus) {
+  const m: Record<TransferStatus, string> = {
+    received: "Received",
+    in_transit: "In Transit",
+    partial: "Partial",
+    pending: "Pending",
+    cancelled: "Cancelled",
+  };
+
+  return m[status] || "Pending";
+}
+
 function statusBadge(status: TransferStatus) {
-  const map: Record<
+  const m: Record<
     TransferStatus,
-    {
-      variant:
-        | "success"
-        | "info"
-        | "warning"
-        | "danger"
-        | "neutral";
-      label: string;
-    }
+    { variant: "success" | "info" | "warning" | "neutral" | "danger"; label: string }
   > = {
     received: { variant: "success", label: "Received" },
     in_transit: { variant: "info", label: "In Transit" },
@@ -116,48 +115,581 @@ function statusBadge(status: TransferStatus) {
     cancelled: { variant: "danger", label: "Cancelled" },
   };
 
-  const item = map[status] || map.pending;
-  return <Badge variant={item.variant}>{item.label}</Badge>;
+  const x = m[status] || m.pending;
+  return <Badge variant={x.variant}>{x.label}</Badge>;
 }
 
-function totalQty(transfer: Transfer) {
-  return transfer.lines.reduce((sum, line) => sum + line.qty, 0);
+function totalQty(t: Transfer) {
+  return t.lines.reduce((s, l) => s + l.qty, 0);
 }
 
-function totalReceived(transfer: Transfer) {
-  return transfer.lines.reduce(
-    (sum, line) => sum + line.received,
-    0
-  );
+function totalReceived(t: Transfer) {
+  return t.lines.reduce((s, l) => s + l.received, 0);
 }
 
 async function fetchJson(url: string, options?: RequestInit) {
-  const response = await fetch(url, options);
-  const text = await response.text();
+  const r = await fetch(url, options);
+  const text = await r.text();
 
-  let data: any;
+  let d: any;
+
   try {
-    data = text ? JSON.parse(text) : {};
+    d = text ? JSON.parse(text) : {};
   } catch {
     throw new Error(
       `Invalid API response from ${url}: ${text.slice(0, 300)}`
     );
   }
 
-  if (!response.ok || !data.success) {
-    throw new Error(
-      data.message || `Request failed with HTTP ${response.status}`
-    );
+  if (!r.ok || !d.success) {
+    throw new Error(d.message || `Request failed with HTTP ${r.status}`);
   }
 
-  return data;
+  return d;
 }
 
-// ============================================================================
-// CREATE TRANSFER MODAL
-// ============================================================================
+/*
+|--------------------------------------------------------------------------
+| DR EXCEL EXPORT
+|--------------------------------------------------------------------------
+|
+| The DR No. in the table downloads the actual Excel template.
+| No PDF conversion is used here.
+|--------------------------------------------------------------------------
+*/
+async function exportDeliveryReceipt(t: Transfer) {
+  const endpoint =
+    `${API_BASE}/store_transfers/store_transfers_export_excel.php` +
+    `?transfer_id=${encodeURIComponent(String(t.id))}`;
 
-function CreateTransferModal({
+  try {
+    const response = await fetch(endpoint, {
+      method: "GET",
+      headers: {
+        Accept:
+          "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/zip,*/*",
+      },
+    });
+
+    if (!response.ok) {
+      let message = `Unable to export Delivery Receipt (${response.status}).`;
+
+      try {
+        const contentType = response.headers.get("content-type") || "";
+
+        if (contentType.includes("application/json")) {
+          const data = await response.json();
+          if (data?.message) message = String(data.message);
+        } else {
+          const text = await response.text();
+          if (text) message = text.slice(0, 500);
+        }
+      } catch {
+        // Keep default message.
+      }
+
+      throw new Error(message);
+    }
+
+    const blob = await response.blob();
+    const contentType = response.headers.get("content-type") || "";
+
+    const extension = contentType.includes("zip") ? "zip" : "xlsx";
+
+    const filename =
+      `${pdfSafeFilename(t.transferNo || "Delivery-Receipt")}.${extension}`;
+
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+
+    anchor.href = url;
+    anchor.download = filename;
+    document.body.appendChild(anchor);
+    anchor.click();
+    anchor.remove();
+
+    setTimeout(() => URL.revokeObjectURL(url), 15000);
+  } catch (error) {
+    console.error("Delivery Receipt Excel export error:", error);
+
+    alert(
+      error instanceof Error
+        ? error.message
+        : "Unable to export Delivery Receipt Excel."
+    );
+  }
+}
+
+function pdfSafeFilename(value: unknown) {
+  return String(value ?? "Delivery-Receipt")
+    .replace(/[<>:"/\\|?*\x00-\x1F]/g, "-")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 120) || "Delivery-Receipt";
+}
+
+/*
+|--------------------------------------------------------------------------
+| VIEW REPORT -> PDF
+|--------------------------------------------------------------------------
+|
+| This is intentionally separate from the Excel DR export.
+|
+| The View modal has a "Download Copy (PDF)" button.
+| The browser opens a print-ready Half Letter portrait report:
+|
+|   5.5 x 8.5 inches
+|   portrait
+|
+| The user can select "Save as PDF" in the browser print dialog.
+|
+| We do NOT use the server's disabled exec()/shell_exec().
+|--------------------------------------------------------------------------
+*/
+function exportViewReportPdf(t: Transfer) {
+  /*
+   * Print the report in the CURRENT TAB instead of opening a popup.
+   *
+   * This avoids browser popup blockers completely.
+   * The browser Print dialog can then be used with:
+   *   Destination -> Save as PDF
+   *   Paper size -> Half Letter
+   *   Orientation -> Portrait
+   */
+
+  const existing = document.getElementById(
+    "rhea-delivery-receipt-print"
+  );
+
+  if (existing) {
+    existing.remove();
+  }
+
+  const rows = t.lines
+    .map(
+      (line, index) => `
+        <tr>
+          <td class="center">${index + 1}</td>
+          <td>
+            <div class="product-name">${escapeHtml(
+              line.name || ""
+            )}</div>
+            ${
+              line.sku
+                ? `<div class="sku">${escapeHtml(line.sku)}</div>`
+                : ""
+            }
+          </td>
+          <td class="number">${fmt(line.qty)}</td>
+          <td class="number received">${fmt(line.received)}</td>
+          <td class="number">${fmt(line.received - line.qty)}</td>
+        </tr>
+      `
+    )
+    .join("");
+
+  let note = "";
+
+  if (t.status === "received") {
+    note =
+      `Note: This transaction is already received` +
+      (t.receivedAt
+        ? ` on ${t.receivedAt}`
+        : ".") +
+      (t.receivedBy
+        ? ` Received by ${t.receivedBy}.`
+        : "");
+  } else if (t.status === "cancelled") {
+    note =
+      "Note: This transaction is cancelled." +
+      (t.cancelReason
+        ? ` Reason: ${t.cancelReason}`
+        : "");
+  } else {
+    note =
+      "Note: This transaction is not yet received. Status: " +
+      (t.status === "partial"
+        ? "Partial"
+        : "In Transit") +
+      ".";
+  }
+
+  const report = document.createElement("div");
+  report.id = "rhea-delivery-receipt-print";
+
+  report.innerHTML = `
+    <style>
+      @page {
+        size: 5.5in 8.5in;
+        margin: 0.25in 0.28in 0.25in 0.28in;
+      }
+
+      #rhea-delivery-receipt-print {
+        display: none;
+      }
+
+      @media print {
+        html,
+        body {
+          width: 5.5in !important;
+          min-width: 5.5in !important;
+          max-width: 5.5in !important;
+          margin: 0 !important;
+          padding: 0 !important;
+          background: #fff !important;
+        }
+
+        body > * {
+          display: none !important;
+        }
+
+        body > #rhea-delivery-receipt-print {
+          display: block !important;
+          width: 4.94in !important;
+          margin: 0 auto !important;
+          padding: 0 !important;
+          color: #111827 !important;
+          background: #fff !important;
+          font-family: Arial, Helvetica, sans-serif !important;
+          font-size: 8px !important;
+        }
+
+        #rhea-delivery-receipt-print * {
+          box-sizing: border-box !important;
+        }
+
+        #rhea-delivery-receipt-print .title {
+          text-align: center;
+          font-size: 14px;
+          font-weight: 800;
+          letter-spacing: 0.4px;
+          margin: 0 0 10px;
+        }
+
+        #rhea-delivery-receipt-print .top-grid {
+          display: grid;
+          grid-template-columns: 1fr 1fr;
+          gap: 14px;
+          margin-bottom: 5px;
+        }
+
+        #rhea-delivery-receipt-print .label {
+          font-size: 6.5px;
+          color: #64748b;
+          text-transform: uppercase;
+          margin-bottom: 2px;
+        }
+
+        #rhea-delivery-receipt-print .value {
+          font-size: 8px;
+          font-weight: 700;
+        }
+
+        #rhea-delivery-receipt-print .date-row {
+          border-bottom: 1px solid #111827;
+          padding-bottom: 5px;
+          margin-bottom: 9px;
+        }
+
+        #rhea-delivery-receipt-print .status {
+          display: inline-block;
+          padding: 2px 6px;
+          border: 1px solid #111827;
+          border-radius: 999px;
+          font-size: 6.5px;
+          font-weight: 700;
+        }
+
+        #rhea-delivery-receipt-print table {
+          width: 100%;
+          border-collapse: collapse;
+          table-layout: fixed;
+        }
+
+        #rhea-delivery-receipt-print th,
+        #rhea-delivery-receipt-print td {
+          border: 1px solid #111827;
+          padding: 4px 3px;
+          vertical-align: middle;
+        }
+
+        #rhea-delivery-receipt-print th {
+          font-size: 6.5px;
+          text-transform: uppercase;
+          font-weight: 800;
+          text-align: left;
+        }
+
+        #rhea-delivery-receipt-print td {
+          font-size: 7.5px;
+        }
+
+        #rhea-delivery-receipt-print th:nth-child(1),
+        #rhea-delivery-receipt-print td:nth-child(1) {
+          width: 7%;
+        }
+
+        #rhea-delivery-receipt-print th:nth-child(2),
+        #rhea-delivery-receipt-print td:nth-child(2) {
+          width: 49%;
+        }
+
+        #rhea-delivery-receipt-print th:nth-child(3),
+        #rhea-delivery-receipt-print td:nth-child(3) {
+          width: 14%;
+        }
+
+        #rhea-delivery-receipt-print th:nth-child(4),
+        #rhea-delivery-receipt-print td:nth-child(4) {
+          width: 15%;
+        }
+
+        #rhea-delivery-receipt-print th:nth-child(5),
+        #rhea-delivery-receipt-print td:nth-child(5) {
+          width: 15%;
+        }
+
+        #rhea-delivery-receipt-print .center {
+          text-align: center;
+        }
+
+        #rhea-delivery-receipt-print .number {
+          text-align: right;
+        }
+
+        #rhea-delivery-receipt-print .received {
+          font-weight: 800;
+        }
+
+        #rhea-delivery-receipt-print .product-name {
+          font-weight: 700;
+          line-height: 1.1;
+        }
+
+        #rhea-delivery-receipt-print .sku {
+          font-size: 6px;
+          color: #64748b;
+          margin-top: 1px;
+        }
+
+        #rhea-delivery-receipt-print .nothing {
+          text-align: center;
+          font-size: 7px;
+          font-weight: 800;
+          padding: 6px 0 8px;
+        }
+
+        #rhea-delivery-receipt-print .notes-title {
+          font-size: 7.5px;
+          font-weight: 800;
+          margin-bottom: 3px;
+        }
+
+        #rhea-delivery-receipt-print .notes-box {
+          border: 1px solid #111827;
+          min-height: 48px;
+          padding: 5px;
+          font-size: 7.5px;
+          white-space: pre-wrap;
+          margin-bottom: 10px;
+        }
+
+        #rhea-delivery-receipt-print .report-note {
+          border: 1px solid #64748b;
+          padding: 5px 6px;
+          margin-bottom: 10px;
+          font-size: 7px;
+          line-height: 1.3;
+        }
+
+        #rhea-delivery-receipt-print .signature {
+          margin-top: 8px;
+        }
+
+        #rhea-delivery-receipt-print .signature-line {
+          border-bottom: 1px solid #111827;
+          height: 16px;
+        }
+
+        #rhea-delivery-receipt-print .signature-label {
+          font-size: 6.5px;
+          margin-top: 2px;
+        }
+
+        #rhea-delivery-receipt-print .signature-grid {
+          display: grid;
+          grid-template-columns: 1fr 1fr;
+          gap: 25px;
+          margin-top: 13px;
+        }
+
+        #rhea-delivery-receipt-print .meta {
+          margin-top: 9px;
+          font-size: 6px;
+          color: #475569;
+        }
+      }
+    </style>
+
+    <div class="title">DELIVERY RECEIPT</div>
+
+    <div class="top-grid">
+      <div>
+        <div class="label">DR No.</div>
+        <div class="value">${escapeHtml(t.transferNo)}</div>
+      </div>
+
+      <div>
+        <div class="label">Transaction Status</div>
+        <div class="status">${escapeHtml(
+          statusLabel(t.status)
+        )}</div>
+      </div>
+    </div>
+
+    <div class="top-grid">
+      <div>
+        <div class="label">From Branch</div>
+        <div class="value">${escapeHtml(
+          t.fromStore
+        )}</div>
+      </div>
+
+      <div>
+        <div class="label">To Branch</div>
+        <div class="value">${escapeHtml(
+          t.toStore
+        )}</div>
+      </div>
+    </div>
+
+    <div class="top-grid date-row">
+      <div>
+        <div class="label">Date Created</div>
+        <div class="value">${escapeHtml(
+          t.createdAt || ""
+        )}</div>
+      </div>
+
+      <div>
+        <div class="label">Received Date</div>
+        <div class="value">${escapeHtml(
+          t.receivedAt || "Not received"
+        )}</div>
+      </div>
+    </div>
+
+    <table>
+      <thead>
+        <tr>
+          <th>No.</th>
+          <th>Item Description</th>
+          <th>Expected</th>
+          <th>Received</th>
+          <th>Difference</th>
+        </tr>
+      </thead>
+
+      <tbody>
+        ${
+          rows ||
+          `<tr>
+            <td colspan="5" class="center">No items</td>
+          </tr>`
+        }
+      </tbody>
+    </table>
+
+    <div class="nothing">- NOTHING FOLLOWS -</div>
+
+    <div class="notes-title">Notes:</div>
+
+    <div class="notes-box">${escapeHtml(
+      t.notes || ""
+    )}</div>
+
+    <div class="report-note">
+      ${escapeHtml(note)}
+    </div>
+
+    <div class="signature">
+      <div class="signature-line"></div>
+      <div class="signature-label">
+        Prepared/Checked by: ${escapeHtml(
+          t.createdBy || ""
+        )}
+      </div>
+    </div>
+
+    <div class="signature-grid">
+      <div>
+        <div class="signature-line"></div>
+        <div class="signature-label">
+          Received by: ${escapeHtml(
+            t.receivedBy || ""
+          )}
+        </div>
+      </div>
+
+      <div>
+        <div class="signature-line"></div>
+        <div class="signature-label">
+          Date: ${escapeHtml(
+            t.receivedAt || ""
+          )}
+        </div>
+      </div>
+    </div>
+
+    <div class="meta">
+      Delivery Receipt Report
+    </div>
+  `;
+
+  document.body.appendChild(report);
+
+  const oldTitle = document.title;
+  document.title = pdfSafeFilename(
+    `${t.transferNo || "Delivery-Receipt"}-Report`
+  );
+
+  const cleanup = () => {
+    report.remove();
+    document.title = oldTitle;
+    window.removeEventListener(
+      "afterprint",
+      cleanup
+    );
+  };
+
+  window.addEventListener("afterprint", cleanup);
+
+  /*
+   * This is called directly by the View modal button,
+   * so window.print() is not affected by popup blockers.
+   */
+  window.print();
+
+  /*
+   * Fallback for browsers that do not fire afterprint.
+   */
+  window.setTimeout(() => {
+    if (document.body.contains(report)) {
+      cleanup();
+    }
+  }, 60000);
+}
+
+function escapeHtml(v: string) {
+  return String(v).replace(/[&<>\"]/g, (c) => ({
+    "&": "&amp;",
+    "<": "&lt;",
+    ">": "&gt;",
+    '"': "&quot;",
+  }[c] || c));
+}
+
+function GenerateReceiptModal({
   activeStoreId,
   stores,
   products,
@@ -170,6 +702,7 @@ function CreateTransferModal({
   onClose: () => void;
   onCreated: () => Promise<void>;
 }) {
+  const [fromStoreId, setFromStoreId] = useState(String(activeStoreId));
   const [toStoreId, setToStoreId] = useState("");
   const [search, setSearch] = useState("");
   const [notes, setNotes] = useState("");
@@ -177,79 +710,67 @@ function CreateTransferModal({
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
 
-  const availableProducts = useMemo(() => {
+  const sourceProducts = useMemo(() => {
     const q = search.trim().toLowerCase();
 
-    return products.filter((product) => {
-      if (product.store_id !== activeStoreId) return false;
-      if (product.stock <= 0) return false;
-      if (!q) return true;
-      return (
-        product.name.toLowerCase().includes(q) ||
-        product.sku.toLowerCase().includes(q)
-      );
-    });
-  }, [products, activeStoreId, search]);
+    return products.filter(
+      (p) =>
+        p.store_id === Number(fromStoreId) &&
+        p.stock > 0 &&
+        (!q ||
+          p.name.toLowerCase().includes(q) ||
+          p.sku.toLowerCase().includes(q))
+    );
+  }, [products, fromStoreId, search]);
 
-  const addProduct = (product: Product) => {
-    if (lines.some((line) => line.id === product.id)) {
-      return;
-    }
+  const add = (p: Product) => {
+    if (lines.some((l) => l.id === p.id)) return;
 
-    setLines((current) => [
-      ...current,
-      {
-        ...product,
-        qty: 1,
-      },
-    ]);
+    setLines((x) => [...x, { ...p, qty: 1 }]);
     setSearch("");
-    setError("");
   };
 
-  const updateQty = (productId: number, qty: number) => {
-    setLines((current) =>
-      current.map((line) =>
-        line.id === productId
+  const qty = (id: number, n: number) =>
+    setLines((x) =>
+      x.map((l) =>
+        l.id === id
           ? {
-              ...line,
+              ...l,
               qty: Math.min(
-                Math.max(1, Number.isFinite(qty) ? qty : 1),
-                line.stock
+                Math.max(1, n || 1),
+                l.stock
               ),
             }
-          : line
+          : l
       )
     );
-  };
 
-  const removeLine = (productId: number) => {
-    setLines((current) =>
-      current.filter((line) => line.id !== productId)
-    );
-  };
-
-  const handleSubmit = async () => {
+  const submit = async () => {
     setError("");
 
-    if (!toStoreId) {
-      setError("Please select a destination store.");
+    if (!fromStoreId || !toStoreId) {
+      setError("Select both From and To branches.");
       return;
     }
 
-    if (lines.length === 0) {
-      setError("Add at least one product to transfer.");
+    if (Number(fromStoreId) === Number(toStoreId)) {
+      setError("From and To branches must be different.");
       return;
     }
 
-    const invalid = lines.find(
-      (line) => line.qty <= 0 || line.qty > line.stock
+    if (!lines.length) {
+      setError("Add at least one product.");
+      return;
+    }
+
+    const bad = lines.find(
+      (l) => l.qty <= 0 || l.qty > l.stock
     );
 
-    if (invalid) {
+    if (bad) {
       setError(
-        `${invalid.name}: transfer quantity must be between 1 and ${fmt(
-          invalid.stock
+        `${bad.name}: quantity must be between 1 and ${fmt(
+          bad.stock
         )}.`
       );
       return;
@@ -258,44 +779,43 @@ function CreateTransferModal({
     try {
       setSaving(true);
 
-      await fetchJson(`${API_BASE}/store_transfers/store_transfers_create.php`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Accept: "application/json",
-        },
-        body: JSON.stringify({
-          from_store_id: activeStoreId,
-          to_store_id: Number(toStoreId),
-          created_by: currentAdminName(),
-          notes: notes.trim(),
-          items: lines.map((line) => ({
-            product_id: line.id,
-            quantity: line.qty,
-          })),
-        }),
-      });
+      await fetchJson(
+        `${API_BASE}/store_transfers/store_transfers_create.php`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Accept: "application/json",
+          },
+          body: JSON.stringify({
+            from_store_id: Number(fromStoreId),
+            to_store_id: Number(toStoreId),
+            created_by: currentAdminName(),
+            notes: notes.trim(),
+            items: lines.map((l) => ({
+              product_id: l.id,
+              quantity: l.qty,
+            })),
+          }),
+        }
+      );
 
       await onCreated();
       onClose();
-    } catch (err) {
+    } catch (e) {
       setError(
-        err instanceof Error
-          ? err.message
-          : "Failed to create transfer."
+        e instanceof Error
+          ? e.message
+          : "Failed to generate receipt."
       );
     } finally {
       setSaving(false);
     }
   };
 
-  const sourceStore = stores.find(
-    (store) => store.id === activeStoreId
-  );
-
   return (
-    <Modal title="Create Store Transfer" onClose={onClose}>
-      <div className="space-y-4">
+    <Modal title="Generate Delivery Receipt" onClose={onClose}>
+      <div className="space-y-4 max-h-[75vh] overflow-y-auto pr-1">
         {error && (
           <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-[12px] text-red-700">
             {error}
@@ -304,228 +824,197 @@ function CreateTransferModal({
 
         <div className="grid grid-cols-2 gap-3">
           <div>
-            <label className="text-[12px] font-medium text-[#374151] block mb-1.5">
-              From Store
+            <label className="text-[12px] font-medium block mb-1.5">
+              From Branch *
             </label>
-            <div className="h-9 px-3 flex items-center rounded-lg border border-[#E2E8F0] bg-[#F8FAFC] text-[12px] font-medium text-[#0F172A]">
-              {sourceStore ? storeLabel(sourceStore) : "Current Store"}
-            </div>
+
+            <select
+              value={fromStoreId}
+              onChange={(e) => {
+                setFromStoreId(e.target.value);
+                setLines([]);
+              }}
+              disabled={saving}
+              className="w-full h-9 px-3 text-[12px] rounded-lg border border-[#E2E8F0] bg-white"
+            >
+              {stores.map((s) => (
+                <option key={s.id} value={s.id}>
+                  {storeLabel(s)}
+                </option>
+              ))}
+            </select>
           </div>
 
           <div>
-            <label className="text-[12px] font-medium text-[#374151] block mb-1.5">
-              To Store <span className="text-red-500">*</span>
+            <label className="text-[12px] font-medium block mb-1.5">
+              To Branch *
             </label>
+
             <select
               value={toStoreId}
-              onChange={(e) => {
-                setToStoreId(e.target.value);
-                setError("");
-              }}
+              onChange={(e) => setToStoreId(e.target.value)}
               disabled={saving}
-              className="w-full h-9 px-3 text-[12px] rounded-lg border border-[#E2E8F0] bg-white focus:outline-none focus:border-[#4F46E5]"
+              className="w-full h-9 px-3 text-[12px] rounded-lg border border-[#E2E8F0] bg-white"
             >
               <option value="">Select destination...</option>
+
               {stores
-                .filter((store) => store.id !== activeStoreId)
-                .map((store) => (
-                  <option key={store.id} value={store.id}>
-                    {storeLabel(store)}
+                .filter(
+                  (s) => s.id !== Number(fromStoreId)
+                )
+                .map((s) => (
+                  <option key={s.id} value={s.id}>
+                    {storeLabel(s)}
                   </option>
                 ))}
             </select>
           </div>
         </div>
 
-        {toStoreId && (
-          <div className="flex items-center justify-center gap-3 rounded-xl bg-[#EEF2FF] border border-[#C7D2FE] px-4 py-3">
-            <span className="text-[12px] font-semibold text-[#4338CA]">
-              {sourceStore ? storeLabel(sourceStore) : "Current Store"}
-            </span>
-            <span className="text-[#6366F1]">→</span>
-            <span className="text-[12px] font-semibold text-[#4338CA]">
-              {storeLabel(
-                stores.find((store) => store.id === Number(toStoreId))!
-              )}
-            </span>
-          </div>
-        )}
-
         <div>
-          <label className="text-[12px] font-medium text-[#374151] block mb-1.5">
-            Add Products
+          <label className="text-[12px] font-medium block mb-1.5">
+            Add Product
           </label>
+
           <input
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            disabled={saving}
             placeholder="Search product by name or SKU..."
-            className="w-full h-9 px-3 text-[12px] rounded-lg border border-[#E2E8F0] bg-white focus:outline-none focus:border-[#4F46E5]"
+            className="w-full h-9 px-3 text-[12px] rounded-lg border border-[#E2E8F0]"
           />
 
           {search.trim() && (
-            <div className="mt-2 max-h-40 overflow-y-auto border border-[#E2E8F0] rounded-xl">
-              {availableProducts.length === 0 ? (
-                <p className="p-4 text-[11px] text-center text-[#94A3B8]">
+            <div className="mt-2 max-h-40 overflow-y-auto border rounded-xl">
+              {sourceProducts.length ? (
+                sourceProducts.map((p) => (
+                  <button
+                    key={p.id}
+                    type="button"
+                    onClick={() => add(p)}
+                    disabled={lines.some(
+                      (l) => l.id === p.id
+                    )}
+                    className="w-full px-3 py-2.5 border-b last:border-0 flex justify-between text-left hover:bg-slate-50 disabled:opacity-40"
+                  >
+                    <span>
+                      <b className="text-[12px]">
+                        {p.name}
+                      </b>
+                      <br />
+                      <small>{p.sku}</small>
+                    </span>
+
+                    <span className="text-[11px] text-emerald-600">
+                      {fmt(p.stock)} in stock
+                    </span>
+                  </button>
+                ))
+              ) : (
+                <p className="p-4 text-center text-[11px] text-slate-400">
                   No available products found.
                 </p>
-              ) : (
-                availableProducts.map((product) => {
-                  const alreadyAdded = lines.some(
-                    (line) => line.id === product.id
-                  );
-
-                  return (
-                    <button
-                      key={product.id}
-                      type="button"
-                      disabled={saving || alreadyAdded}
-                      onClick={() => addProduct(product)}
-                      className="w-full px-3 py-2.5 border-b border-[#F1F5F9] last:border-0 flex items-center justify-between text-left hover:bg-[#F8FAFC] disabled:opacity-40"
-                    >
-                      <div className="min-w-0">
-                        <p className="text-[12px] font-medium text-[#0F172A] truncate">
-                          {product.name}
-                        </p>
-                        <p className="text-[10px] text-[#94A3B8] font-mono">
-                          {product.sku}
-                        </p>
-                      </div>
-                      <span className="text-[11px] font-semibold text-emerald-600 shrink-0">
-                        {fmt(product.stock)} in stock
-                      </span>
-                    </button>
-                  );
-                })
               )}
             </div>
           )}
         </div>
 
         {lines.length > 0 && (
-          <div>
-            <div className="flex items-center justify-between mb-2">
-              <label className="text-[12px] font-medium text-[#374151]">
-                Transfer Lines
-              </label>
-              <span className="text-[10px] text-[#94A3B8]">
-                {lines.length} SKU{lines.length !== 1 ? "s" : ""}
-              </span>
-            </div>
+          <div className="border rounded-xl overflow-hidden">
+            <table className="w-full">
+              <thead className="bg-slate-50">
+                <tr>
+                  <th className="p-2 text-left text-[9px]">
+                    Product
+                  </th>
+                  <th className="p-2 text-right text-[9px]">
+                    Stock
+                  </th>
+                  <th className="p-2 text-right text-[9px]">
+                    Qty
+                  </th>
+                  <th />
+                </tr>
+              </thead>
 
-            <div className="border border-[#E2E8F0] rounded-xl overflow-hidden">
-              <table className="w-full">
-                <thead className="bg-[#F8FAFC]">
-                  <tr>
-                    <th className="px-3 py-2 text-left text-[9px] uppercase tracking-wider text-[#94A3B8]">
-                      Product
-                    </th>
-                    <th className="px-3 py-2 text-left text-[9px] uppercase tracking-wider text-[#94A3B8]">
-                      Stock
-                    </th>
-                    <th className="px-3 py-2 text-left text-[9px] uppercase tracking-wider text-[#94A3B8]">
-                      Qty
-                    </th>
-                    <th />
-                  </tr>
-                </thead>
-                <tbody>
-                  {lines.map((line) => (
-                    <tr key={line.id} className="border-t border-[#F1F5F9]">
-                      <td className="px-3 py-2.5">
-                        <p className="text-[11px] font-medium text-[#0F172A] truncate max-w-[190px]">
-                          {line.name}
-                        </p>
-                        <p className="text-[9px] text-[#94A3B8] font-mono">
-                          {line.sku}
-                        </p>
-                      </td>
-                      <td className="px-3 py-2.5 text-[11px] font-semibold text-emerald-600">
-                        {fmt(line.stock)}
-                      </td>
-                      <td className="px-3 py-2.5">
-                        <div className="flex items-center gap-1">
-                          <button
-                            type="button"
-                            disabled={saving}
-                            onClick={() =>
-                              updateQty(line.id, line.qty - 1)
-                            }
-                            className="w-6 h-6 rounded-md bg-[#F1F5F9] text-[#475569]"
-                          >
-                            −
-                          </button>
-                          <input
-                            type="number"
-                            min={1}
-                            max={line.stock}
-                            value={line.qty}
-                            disabled={saving}
-                            onChange={(e) =>
-                              updateQty(line.id, Number(e.target.value))
-                            }
-                            className="w-12 h-6 text-center text-[11px] font-semibold rounded-md border border-[#E2E8F0]"
-                          />
-                          <button
-                            type="button"
-                            disabled={saving}
-                            onClick={() =>
-                              updateQty(line.id, line.qty + 1)
-                            }
-                            className="w-6 h-6 rounded-md bg-[#F1F5F9] text-[#475569]"
-                          >
-                            +
-                          </button>
-                        </div>
-                      </td>
-                      <td className="px-3 py-2.5 text-right">
-                        <button
-                          type="button"
-                          disabled={saving}
-                          onClick={() => removeLine(line.id)}
-                          className="text-[11px] text-red-400 hover:text-red-600"
-                        >
-                          Remove
-                        </button>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-                <tfoot className="bg-[#F8FAFC] border-t border-[#E2E8F0]">
-                  <tr>
-                    <td colSpan={2} className="px-3 py-2 text-[10px] text-[#64748B]">
-                      Total transfer quantity
+              <tbody>
+                {lines.map((l) => (
+                  <tr key={l.id} className="border-t">
+                    <td className="p-2 text-[11px]">
+                      {l.name}
+                      <br />
+                      <small>{l.sku}</small>
                     </td>
-                    <td colSpan={2} className="px-3 py-2 text-right text-[12px] font-bold text-[#4F46E5]">
-                      {fmt(lines.reduce((sum, line) => sum + line.qty, 0))}
+
+                    <td className="p-2 text-right text-[11px]">
+                      {fmt(l.stock)}
+                    </td>
+
+                    <td className="p-2">
+                      <input
+                        type="number"
+                        min={1}
+                        max={l.stock}
+                        value={l.qty}
+                        onChange={(e) =>
+                          qty(
+                            l.id,
+                            Number(e.target.value)
+                          )
+                        }
+                        className="w-16 h-7 text-center text-[11px] border rounded-md ml-auto block"
+                      />
+                    </td>
+
+                    <td className="p-2">
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setLines((x) =>
+                            x.filter(
+                              (a) => a.id !== l.id
+                            )
+                          )
+                        }
+                        className="text-[11px] text-red-500"
+                      >
+                        Remove
+                      </button>
                     </td>
                   </tr>
-                </tfoot>
-              </table>
-            </div>
+                ))}
+              </tbody>
+            </table>
           </div>
         )}
 
         <div>
-          <label className="text-[12px] font-medium text-[#374151] block mb-1.5">
+          <label className="text-[12px] font-medium block mb-1.5">
             Notes
           </label>
+
           <textarea
             value={notes}
             onChange={(e) => setNotes(e.target.value)}
-            disabled={saving}
             rows={3}
-            placeholder="Reason, instructions, or transfer notes..."
-            className="w-full px-3 py-2.5 text-[12px] rounded-lg border border-[#E2E8F0] resize-none focus:outline-none focus:border-[#4F46E5]"
+            className="w-full px-3 py-2.5 text-[12px] rounded-lg border resize-none"
           />
         </div>
 
-        <div className="flex justify-end gap-2 pt-1">
-          <Button variant="secondary" onClick={onClose} disabled={saving}>
+        <div className="flex justify-end gap-2">
+          <Button
+            variant="secondary"
+            onClick={onClose}
+            disabled={saving}
+          >
             Cancel
           </Button>
-          <Button variant="primary" onClick={handleSubmit} disabled={saving}>
-            {saving ? "Creating..." : "Create Transfer"}
+
+          <Button
+            variant="primary"
+            onClick={submit}
+            disabled={saving}
+          >
+            {saving ? "Generating..." : "Generate Receipt"}
           </Button>
         </div>
       </div>
@@ -533,86 +1022,105 @@ function CreateTransferModal({
   );
 }
 
-// ============================================================================
-// RECEIVE MODAL
-// ============================================================================
-
-function ReceiveModal({
-  transfer,
+function ReceiveByDRModal({
   onClose,
   onReceived,
 }: {
-  transfer: Transfer;
   onClose: () => void;
   onReceived: () => Promise<void>;
 }) {
-  const [received, setReceived] = useState<Record<number, number>>(
-    Object.fromEntries(
-      transfer.lines.map((line) => [
-        line.id,
-        Math.max(0, line.qty - line.received),
-      ])
-    )
-  );
+  const [dr, setDr] = useState("");
+  const [data, setData] = useState<any>(null);
+  const [actual, setActual] = useState<Record<number, number>>({});
+  const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
 
-  const remaining = (line: TransferLine) =>
-    Math.max(0, line.qty - line.received);
-
-  const totalToReceive = transfer.lines.reduce(
-    (sum, line) =>
-      sum + Math.min(remaining(line), Number(received[line.id] || 0)),
-    0
-  );
-
-  const submit = async () => {
+  const fetchDR = async () => {
     setError("");
 
-    if (totalToReceive <= 0) {
-      setError("Enter at least one quantity to receive.");
+    if (!dr.trim()) {
+      setError("Enter a Delivery Receipt number.");
       return;
     }
 
-    for (const line of transfer.lines) {
-      const qty = Number(received[line.id] || 0);
-      if (qty < 0 || qty > remaining(line)) {
-        setError(
-          `${line.name}: receive quantity cannot exceed ${fmt(
-            remaining(line)
-          )}.`
+    try {
+      setLoading(true);
+
+      const d = await fetchJson(
+        `${API_BASE}/store_transfers/store_transfers_get.php?transfer_no=${encodeURIComponent(
+          dr.trim()
+        )}`
+      );
+
+      setData(d.transfer);
+
+      const init: Record<number, number> = {};
+
+      (d.transfer.lines || []).forEach((l: any) => {
+        init[l.id] = Math.max(
+          0,
+          Number(l.qty) - Number(l.received || 0)
         );
-        return;
-      }
+      });
+
+      setActual(init);
+    } catch (e) {
+      setError(
+        e instanceof Error
+          ? e.message
+          : "Delivery Receipt not found."
+      );
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const submit = async () => {
+    if (!data) return;
+
+    setError("");
+
+    if (
+      data.status === "cancelled" ||
+      data.status === "received"
+    ) {
+      setError(
+        "This transaction is not available for receiving."
+      );
+      return;
     }
 
     try {
       setSaving(true);
 
-      await fetchJson(`${API_BASE}/store_transfers/store_transfers_receive.php`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Accept: "application/json",
-        },
-        body: JSON.stringify({
-          transfer_id: transfer.id,
-          store_id: transfer.toStoreId,
-          user: currentAdminName(),
-          items: transfer.lines.map((line) => ({
-            item_id: line.id,
-            quantity: Number(received[line.id] || 0),
-          })),
-        }),
-      });
+      await fetchJson(
+        `${API_BASE}/store_transfers/store_transfers_receive.php`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Accept: "application/json",
+          },
+          body: JSON.stringify({
+            transfer_id: data.id,
+            store_id: data.toStoreId,
+            user: currentAdminName(),
+            items: data.lines.map((l: any) => ({
+              item_id: l.id,
+              quantity: Number(actual[l.id] || 0),
+            })),
+          }),
+        }
+      );
 
       await onReceived();
       onClose();
-    } catch (err) {
+    } catch (e) {
       setError(
-        err instanceof Error
-          ? err.message
-          : "Failed to receive transfer."
+        e instanceof Error
+          ? e.message
+          : "Failed to receive delivery receipt."
       );
     } finally {
       setSaving(false);
@@ -620,119 +1128,152 @@ function ReceiveModal({
   };
 
   return (
-    <Modal title={`Receive ${transfer.transferNo}`} onClose={onClose}>
-      <div className="space-y-4">
+    <Modal title="Received Delivery Receipt" onClose={onClose}>
+      <div className="space-y-4 max-h-[78vh] overflow-y-auto pr-1">
         {error && (
           <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-[12px] text-red-700">
             {error}
           </div>
         )}
 
-        <div className="rounded-xl bg-[#F8FAFC] border border-[#E2E8F0] px-4 py-3">
-          <p className="text-[10px] text-[#94A3B8]">Destination receipt</p>
-          <p className="text-[12px] font-semibold text-[#0F172A] mt-0.5">
-            {transfer.fromStore} <span className="text-[#6366F1]">→</span>{" "}
-            {transfer.toStore}
-          </p>
-        </div>
+        <div className="flex gap-2">
+          <input
+            value={dr}
+            onChange={(e) => setDr(e.target.value)}
+            placeholder="Enter DR No."
+            className="flex-1 h-9 px-3 text-[12px] rounded-lg border"
+          />
 
-        <div className="border border-[#E2E8F0] rounded-xl overflow-hidden">
-          <table className="w-full">
-            <thead className="bg-[#F8FAFC]">
-              <tr>
-                <th className="px-3 py-2 text-left text-[9px] uppercase text-[#94A3B8]">
-                  Product
-                </th>
-                <th className="px-3 py-2 text-right text-[9px] uppercase text-[#94A3B8]">
-                  Sent
-                </th>
-                <th className="px-3 py-2 text-right text-[9px] uppercase text-[#94A3B8]">
-                  Received
-                </th>
-                <th className="px-3 py-2 text-right text-[9px] uppercase text-[#94A3B8]">
-                  Receive Now
-                </th>
-              </tr>
-            </thead>
-            <tbody>
-              {transfer.lines.map((line) => {
-                const left = remaining(line);
-                return (
-                  <tr key={line.id} className="border-t border-[#F1F5F9]">
-                    <td className="px-3 py-2.5">
-                      <p className="text-[11px] font-medium text-[#0F172A]">
-                        {line.name}
-                      </p>
-                      <p className="text-[9px] text-[#94A3B8] font-mono">
-                        {line.sku}
-                      </p>
-                    </td>
-                    <td className="px-3 py-2.5 text-right text-[11px] font-semibold">
-                      {fmt(line.qty)}
-                    </td>
-                    <td className="px-3 py-2.5 text-right text-[11px] text-emerald-600 font-semibold">
-                      {fmt(line.received)}
-                    </td>
-                    <td className="px-3 py-2.5 text-right text-[11px] font-semibold text-[#475569]">
-                      ₱{Number(line.unitCost || 0).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                    </td>
-                    <td className="px-3 py-2.5">
-                      <input
-                        type="number"
-                        min={0}
-                        max={left}
-                        value={received[line.id] ?? 0}
-                        disabled={saving || left <= 0}
-                        onChange={(e) =>
-                          setReceived((current) => ({
-                            ...current,
-                            [line.id]: Math.min(
-                              Math.max(0, Number(e.target.value) || 0),
-                              left
-                            ),
-                          }))
-                        }
-                        className="w-20 ml-auto h-7 block text-center text-[11px] font-semibold rounded-md border border-[#E2E8F0] focus:outline-none focus:border-[#4F46E5]"
-                      />
-                      {left > 0 && (
-                        <p className="text-[9px] text-[#94A3B8] text-right mt-1">
-                          {fmt(left)} left
-                        </p>
-                      )}
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-            <tfoot className="border-t border-[#E2E8F0] bg-[#F8FAFC]">
-              <tr>
-                <td colSpan={4} className="px-3 py-2.5 text-[11px] font-semibold text-[#64748B]">
-                  Receive now
-                </td>
-                <td className="px-3 py-2.5 text-right text-[13px] font-bold text-[#4F46E5]">
-                  {fmt(totalToReceive)}
-                </td>
-              </tr>
-            </tfoot>
-          </table>
-        </div>
-
-        <div className="flex justify-end gap-2">
-          <Button variant="secondary" onClick={onClose} disabled={saving}>
-            Cancel
-          </Button>
-          <Button variant="primary" onClick={submit} disabled={saving}>
-            {saving ? "Receiving..." : "Confirm Receipt"}
+          <Button
+            variant="primary"
+            onClick={fetchDR}
+            disabled={loading}
+          >
+            {loading ? "Fetching..." : "Fetch"}
           </Button>
         </div>
+
+        {data && (
+          <>
+            <div className="rounded-xl border bg-slate-50 p-3 text-[11px]">
+              <b>{data.transferNo}</b>
+
+              <div className="mt-1">
+                {data.fromStore} → {data.toStore}
+              </div>
+
+              <div className="mt-1">
+                Status: {statusBadge(data.status)}
+              </div>
+            </div>
+
+            {data.status !== "cancelled" &&
+              data.status !== "received" && (
+                <div className="border rounded-xl overflow-hidden">
+                  <table className="w-full">
+                    <thead className="bg-slate-50">
+                      <tr>
+                        <th className="p-2 text-left text-[9px]">
+                          Product
+                        </th>
+                        <th className="p-2 text-right text-[9px]">
+                          Expected Received
+                        </th>
+                        <th className="p-2 text-right text-[9px]">
+                          Actual Received
+                        </th>
+                        <th className="p-2 text-right text-[9px]">
+                          Difference
+                        </th>
+                      </tr>
+                    </thead>
+
+                    <tbody>
+                      {data.lines.map((l: any) => (
+                        <tr key={l.id} className="border-t">
+                          <td className="p-2 text-[11px]">
+                            {l.name}
+                            <br />
+                            <small>{l.sku}</small>
+                          </td>
+
+                          <td className="p-2 text-right text-[11px]">
+                            {fmt(
+                              Number(l.qty) -
+                                Number(l.received || 0)
+                            )}
+                          </td>
+
+                          <td className="p-2">
+                            <input
+                              type="number"
+                              min={0}
+                              max={
+                                Number(l.qty) -
+                                Number(l.received || 0)
+                              }
+                              value={actual[l.id] ?? 0}
+                              onChange={(e) =>
+                                setActual((x) => ({
+                                  ...x,
+                                  [l.id]: Math.min(
+                                    Math.max(
+                                      0,
+                                      Number(e.target.value) ||
+                                        0
+                                    ),
+                                    Number(l.qty) -
+                                      Number(
+                                        l.received || 0
+                                      )
+                                  ),
+                                }))
+                              }
+                              className="w-20 h-7 text-center text-[11px] border rounded-md ml-auto block"
+                            />
+                          </td>
+
+                          <td className="p-2 text-right text-[11px] font-semibold">
+                            {fmt(
+                              Number(actual[l.id] || 0) -
+                                (Number(l.qty) -
+                                  Number(l.received || 0))
+                            )}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+
+            <div className="flex justify-end gap-2">
+              {data.status !== "cancelled" &&
+                data.status !== "received" && (
+                  <Button
+                    variant="primary"
+                    onClick={submit}
+                    disabled={saving}
+                  >
+                    {saving
+                      ? "Saving..."
+                      : "Confirm Received"}
+                  </Button>
+                )}
+
+              <Button
+                variant="secondary"
+                onClick={onClose}
+              >
+                Close
+              </Button>
+            </div>
+          </>
+        )}
       </div>
     </Modal>
   );
 }
-
-// ============================================================================
-// DETAILS MODAL
-// ============================================================================
 
 function DetailModal({
   transfer,
@@ -746,55 +1287,16 @@ function DetailModal({
   onRefresh: () => Promise<void>;
 }) {
   const [loading, setLoading] = useState(false);
-  const [showReceive, setShowReceive] = useState(false);
-  const [cancelReason, setCancelReason] = useState("");
   const [showCancel, setShowCancel] = useState(false);
+  const [reason, setReason] = useState("");
   const [error, setError] = useState("");
 
-  const isSource = transfer.fromStoreId === activeStoreId;
-  const canSend = isSource && transfer.status === "pending";
-  // Receiving is available directly from the transfer record.
-  // The destination store is taken from transfer.toStoreId, so the user
-  // does not need to switch the global/top-bar store first.
-  const canReceive =
-    transfer.status === "in_transit" || transfer.status === "partial";
-  const canCancel = isSource && transfer.status === "pending";
+  const canCancel =
+    transfer.status !== "received" &&
+    transfer.status !== "cancelled";
 
-  const sendTransfer = async () => {
-    if (!canSend) return;
-    setError("");
-
-    try {
-      setLoading(true);
-      await fetchJson(`${API_BASE}/store_transfers/store_transfers_dispatch.php`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Accept: "application/json",
-        },
-        body: JSON.stringify({
-          transfer_id: transfer.id,
-          store_id: activeStoreId,
-          user: currentAdminName(),
-        }),
-      });
-
-      await onRefresh();
-      onClose();
-    } catch (err) {
-      setError(
-        err instanceof Error
-          ? err.message
-          : "Failed to send transfer."
-      );
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const cancelTransfer = async () => {
-    if (!canCancel) return;
-    if (!cancelReason.trim()) {
+  const cancel = async () => {
+    if (!reason.trim()) {
       setError("Cancellation reason is required.");
       return;
     }
@@ -803,198 +1305,221 @@ function DetailModal({
       setLoading(true);
       setError("");
 
-      await fetchJson(`${API_BASE}/store_transfers/store_transfers_cancel.php`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Accept: "application/json",
-        },
-        body: JSON.stringify({
-          transfer_id: transfer.id,
-          store_id: activeStoreId,
-          reason: cancelReason.trim(),
-        }),
-      });
+      await fetchJson(
+        `${API_BASE}/store_transfers/store_transfers_cancel.php`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Accept: "application/json",
+          },
+          body: JSON.stringify({
+            transfer_id: transfer.id,
+            store_id: activeStoreId,
+            reason: reason.trim(),
+          }),
+        }
+      );
 
       await onRefresh();
       onClose();
-    } catch (err) {
+    } catch (e) {
       setError(
-        err instanceof Error
-          ? err.message
-          : "Failed to cancel transfer."
+        e instanceof Error
+          ? e.message
+          : "Failed to cancel transaction."
       );
     } finally {
       setLoading(false);
     }
   };
 
-  if (showReceive) {
-    return (
-      <ReceiveModal
-        transfer={transfer}
-        onClose={() => setShowReceive(false)}
-        onReceived={onRefresh}
-      />
-    );
-  }
-
   return (
-    <Modal title={transfer.transferNo} onClose={onClose}>
-      <div className="space-y-4">
+    <Modal
+      title={`View ${transfer.transferNo}`}
+      onClose={onClose}
+    >
+      <div className="space-y-4 max-h-[78vh] overflow-y-auto pr-1">
         {error && (
           <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-[12px] text-red-700">
             {error}
           </div>
         )}
 
-        <div className="flex items-center justify-between rounded-xl border border-[#E2E8F0] px-4 py-3">
+        <div className="flex items-center justify-between rounded-xl border p-4">
           <div>
-            <p className="text-[10px] text-[#94A3B8]">Transfer status</p>
-            <div className="mt-1">{statusBadge(transfer.status)}</div>
+            <p className="text-[10px] text-slate-400">
+              Transaction Status
+            </p>
+
+            <div className="mt-1">
+              {statusBadge(transfer.status)}
+            </div>
           </div>
+
           <div className="text-right">
-            <p className="text-[10px] text-[#94A3B8]">Total units</p>
-            <p className="text-[15px] font-bold text-[#0F172A]">
-              {fmt(totalQty(transfer))}
+            <p className="text-[10px] text-slate-400">
+              DR No.
+            </p>
+
+            <p className="font-bold text-indigo-600">
+              {transfer.transferNo}
             </p>
           </div>
         </div>
 
-        <div className="flex items-center gap-3 bg-[#EEF2FF] rounded-xl px-4 py-3">
-          <div className="flex-1 text-center min-w-0">
-            <p className="text-[9px] uppercase tracking-wider font-semibold text-[#6366F1]">
-              From
+        <div className="grid grid-cols-2 gap-3">
+          <div className="rounded-xl bg-slate-50 p-3">
+            <p className="text-[9px] text-slate-400">
+              From Branch
             </p>
-            <p className="text-[12px] font-bold text-[#4338CA] truncate">
+
+            <p className="text-[11px] font-semibold mt-1">
               {transfer.fromStore}
             </p>
           </div>
-          <span className="text-[#6366F1] text-lg">→</span>
-          <div className="flex-1 text-center min-w-0">
-            <p className="text-[9px] uppercase tracking-wider font-semibold text-[#6366F1]">
-              To
+
+          <div className="rounded-xl bg-slate-50 p-3">
+            <p className="text-[9px] text-slate-400">
+              To Branch
             </p>
-            <p className="text-[12px] font-bold text-[#4338CA] truncate">
+
+            <p className="text-[11px] font-semibold mt-1">
               {transfer.toStore}
             </p>
           </div>
         </div>
 
         <div className="grid grid-cols-2 gap-3">
-          <div className="rounded-xl bg-[#F8FAFC] px-3 py-3">
-            <p className="text-[9px] text-[#94A3B8]">Created</p>
-            <p className="text-[11px] font-medium text-[#334155] mt-1">
+          <div>
+            <p className="text-[9px] text-slate-400">
+              Date Created
+            </p>
+
+            <p className="text-[11px] mt-1">
               {transfer.createdAt}
             </p>
-            <p className="text-[10px] text-[#64748B] mt-0.5">
-              by {transfer.createdBy}
-            </p>
           </div>
-          <div className="rounded-xl bg-[#F8FAFC] px-3 py-3">
-            <p className="text-[9px] text-[#94A3B8]">Received</p>
-            <p className="text-[11px] font-medium text-[#334155] mt-1">
+
+          <div>
+            <p className="text-[9px] text-slate-400">
+              Received Date
+            </p>
+
+            <p className="text-[11px] mt-1">
               {transfer.receivedAt || "Not received"}
             </p>
-            {transfer.receivedBy && (
-              <p className="text-[10px] text-[#64748B] mt-0.5">
-                by {transfer.receivedBy}
-              </p>
+          </div>
+        </div>
+
+        <div className="border rounded-xl overflow-hidden">
+          <table className="w-full">
+            <thead className="bg-slate-50">
+              <tr>
+                <th className="p-2 text-left text-[9px]">
+                  Product
+                </th>
+
+                <th className="p-2 text-right text-[9px]">
+                  Expected
+                </th>
+
+                <th className="p-2 text-right text-[9px]">
+                  Received
+                </th>
+
+                <th className="p-2 text-right text-[9px]">
+                  Difference
+                </th>
+              </tr>
+            </thead>
+
+            <tbody>
+              {transfer.lines.map((l) => (
+                <tr key={l.id} className="border-t">
+                  <td className="p-2 text-[11px]">
+                    {l.name}
+                    <br />
+                    <small>{l.sku}</small>
+                  </td>
+
+                  <td className="p-2 text-right text-[11px]">
+                    {fmt(l.qty)}
+                  </td>
+
+                  <td className="p-2 text-right text-[11px] font-semibold text-emerald-600">
+                    {fmt(l.received)}
+                  </td>
+
+                  <td className="p-2 text-right text-[11px] font-semibold">
+                    {fmt(l.received - l.qty)}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+
+        {transfer.status === "received" ? (
+          <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-3 text-[11px] text-emerald-700">
+            Note: This transaction is already received
+            {transfer.receivedAt
+              ? ` on ${transfer.receivedAt}`
+              : "."}
+            {transfer.receivedBy
+              ? ` Received by ${transfer.receivedBy}.`
+              : ""}
+          </div>
+        ) : transfer.status === "cancelled" ? (
+          <div className="rounded-xl border border-red-200 bg-red-50 p-3 text-[11px] text-red-700">
+            <b>Note: This transaction is cancelled.</b>
+
+            {transfer.cancelReason && (
+              <div className="mt-1">
+                Reason: {transfer.cancelReason}
+              </div>
             )}
           </div>
-        </div>
-
-        <div>
-          <p className="text-[12px] font-semibold text-[#374151] mb-2">
-            Transfer Items
-          </p>
-          <div className="border border-[#E2E8F0] rounded-xl overflow-hidden">
-            <table className="w-full">
-              <thead className="bg-[#F8FAFC]">
-                <tr>
-                  <th className="px-3 py-2 text-left text-[9px] uppercase text-[#94A3B8]">
-                    Product
-                  </th>
-                  <th className="px-3 py-2 text-right text-[9px] uppercase text-[#94A3B8]">
-                    Sent
-                  </th>
-                  <th className="px-3 py-2 text-right text-[9px] uppercase text-[#94A3B8]">
-                    Received
-                  </th>
-                  <th className="px-3 py-2 text-right text-[9px] uppercase text-[#94A3B8]">
-                    Unit Cost
-                  </th>
-                  <th className="px-3 py-2 text-right text-[9px] uppercase text-[#94A3B8]">
-                    Remaining
-                  </th>
-                </tr>
-              </thead>
-              <tbody>
-                {transfer.lines.map((line) => (
-                  <tr key={line.id} className="border-t border-[#F1F5F9]">
-                    <td className="px-3 py-2.5">
-                      <p className="text-[11px] font-medium text-[#0F172A]">
-                        {line.name}
-                      </p>
-                      <p className="text-[9px] text-[#94A3B8] font-mono">
-                        {line.sku}
-                      </p>
-                    </td>
-                    <td className="px-3 py-2.5 text-right text-[11px] font-semibold">
-                      {fmt(line.qty)}
-                    </td>
-                    <td className="px-3 py-2.5 text-right text-[11px] font-semibold text-emerald-600">
-                      {fmt(line.received)}
-                    </td>
-                    <td className="px-3 py-2.5 text-right text-[11px] font-semibold text-[#475569]">
-                      ₱{Number(line.unitCost || 0).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                    </td>
-                    <td className="px-3 py-2.5 text-right text-[11px] font-semibold text-amber-600">
-                      {fmt(Math.max(0, line.qty - line.received))}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+        ) : (
+          <div className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-[11px] text-amber-700">
+            Note: This transaction is not yet received.
+            Status:{" "}
+            {transfer.status === "partial"
+              ? "Partial"
+              : "In Transit"}
+            .
           </div>
-        </div>
+        )}
 
         {transfer.notes && (
-          <div className="rounded-xl border border-[#E2E8F0] px-3 py-3">
-            <p className="text-[9px] uppercase tracking-wider text-[#94A3B8]">
+          <div className="rounded-xl border p-3">
+            <p className="text-[9px] uppercase text-slate-400">
               Notes
             </p>
-            <p className="text-[11px] text-[#475569] mt-1 whitespace-pre-wrap">
+
+            <p className="text-[11px] mt-1 whitespace-pre-wrap">
               {transfer.notes}
             </p>
           </div>
         )}
 
-        {transfer.cancelReason && (
-          <div className="rounded-xl border border-red-200 bg-red-50 px-3 py-3">
-            <p className="text-[9px] uppercase tracking-wider text-red-400">
-              Cancellation reason
-            </p>
-            <p className="text-[11px] text-red-700 mt-1">
-              {transfer.cancelReason}
-            </p>
-          </div>
-        )}
-
         {showCancel && (
-          <div className="rounded-xl border border-red-200 bg-red-50 p-3 space-y-2">
+          <div className="rounded-xl border border-red-200 bg-red-50 p-3">
             <p className="text-[12px] font-semibold text-red-700">
-              Cancel Transfer
+              Cancel Transaction
             </p>
+
             <textarea
-              value={cancelReason}
-              onChange={(e) => setCancelReason(e.target.value)}
-              disabled={loading}
+              value={reason}
+              onChange={(e) =>
+                setReason(e.target.value)
+              }
               rows={2}
-              placeholder="Reason for cancellation..."
-              className="w-full px-3 py-2 text-[11px] rounded-lg border border-red-200 resize-none bg-white"
+              className="w-full mt-2 px-3 py-2 text-[11px] rounded-lg border resize-none"
+              placeholder="Cancellation reason..."
             />
-            <div className="flex justify-end gap-2">
+
+            <div className="flex justify-end gap-2 mt-2">
               <Button
                 variant="secondary"
                 size="sm"
@@ -1003,54 +1528,46 @@ function DetailModal({
               >
                 Back
               </Button>
+
               <Button
                 variant="danger"
                 size="sm"
-                onClick={cancelTransfer}
+                onClick={cancel}
                 disabled={loading}
               >
-                {loading ? "Cancelling..." : "Confirm Cancel"}
+                {loading
+                  ? "Cancelling..."
+                  : "Confirm Cancel"}
               </Button>
             </div>
           </div>
         )}
 
         {!showCancel && (
-          <div className="flex items-center justify-end gap-2 pt-1">
+          <div className="flex justify-end gap-2 flex-wrap">
+            <Button
+              variant="primary"
+              size="sm"
+              onClick={() => exportViewReportPdf(transfer)}
+            >
+              Download Copy (PDF)
+            </Button>
+
             {canCancel && (
               <Button
                 variant="danger"
                 size="sm"
                 onClick={() => setShowCancel(true)}
-                disabled={loading}
               >
-                Cancel Transfer
+                Cancel Transaction
               </Button>
             )}
 
-            {canSend && (
-              <Button
-                variant="primary"
-                size="sm"
-                onClick={sendTransfer}
-                disabled={loading}
-              >
-                {loading ? "Sending..." : "Send Transfer"}
-              </Button>
-            )}
-
-            {canReceive && (
-              <Button
-                variant="primary"
-                size="sm"
-                onClick={() => setShowReceive(true)}
-                disabled={loading}
-              >
-                Receive Stock
-              </Button>
-            )}
-
-            <Button variant="ghost" size="sm" onClick={onClose}>
+            <Button
+              variant="secondary"
+              size="sm"
+              onClick={onClose}
+            >
               Close
             </Button>
           </div>
@@ -1060,43 +1577,45 @@ function DetailModal({
   );
 }
 
-// ============================================================================
-// PAGE
-// ============================================================================
-
 export default function StoreTransfers({
   activeStoreId,
-}: StoreTransfersProps) {
+}: Props) {
   const [stores, setStores] = useState<Store[]>([]);
   const [products, setProducts] = useState<Product[]>([]);
   const [transfers, setTransfers] = useState<Transfer[]>([]);
-
   const [loading, setLoading] = useState(true);
-  const [loadingProducts, setLoadingProducts] = useState(false);
+  const [loadingProducts, setLoadingProducts] =
+    useState(false);
   const [error, setError] = useState("");
-
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState("");
   const [storeFilter, setStoreFilter] = useState("");
   const [page, setPage] = useState(1);
-
-  const [showCreate, setShowCreate] = useState(false);
-  const [detail, setDetail] = useState<Transfer | null>(null);
+  const [showGenerate, setShowGenerate] =
+    useState(false);
+  const [showReceived, setShowReceived] =
+    useState(false);
+  const [detail, setDetail] = useState<Transfer | null>(
+    null
+  );
 
   const PER_PAGE = 8;
 
   const loadStores = async () => {
-    const data = await fetchJson(`${API_BASE}/stores/list.php`);
-    const nextStores: Store[] = Array.isArray(data.stores)
-      ? data.stores.map((store: any) => ({
-          id: Number(store.id),
-          store_name: store.store_name || "",
-          branch_name: store.branch_name || "",
-          status: store.status,
-        }))
-      : [];
+    const d = await fetchJson(
+      `${API_BASE}/stores/list.php`
+    );
 
-    setStores(nextStores);
+    setStores(
+      Array.isArray(d.stores)
+        ? d.stores.map((s: any) => ({
+            id: Number(s.id),
+            store_name: s.store_name || "",
+            branch_name: s.branch_name || "",
+            status: s.status,
+          }))
+        : []
+    );
   };
 
   const loadProducts = async () => {
@@ -1106,35 +1625,41 @@ export default function StoreTransfers({
     }
 
     setLoadingProducts(true);
+
     try {
-      const data = await fetchJson(
-        `${API_BASE}/inventory/inventory.php?store_id=${encodeURIComponent(
-          activeStoreId
-        )}`
+      const d = await fetchJson(
+        `${API_BASE}/inventory/inventory.php?store_id=${activeStoreId}`
       );
 
-      const rawProducts = Array.isArray(data.items)
-        ? data.items
-        : Array.isArray(data.products)
-        ? data.products
-        : [];
+      const raw = Array.isArray(d.items)
+        ? d.items
+        : Array.isArray(d.products)
+          ? d.products
+          : [];
 
-      const nextProducts: Product[] = rawProducts
-        .map((product: any) => ({
-          id: Number(product.product_id ?? product.id ?? 0),
-          name: product.name || product.product_name || "",
-          sku: product.sku || "",
-          stock: Number(product.stock || 0),
-          store_id: Number(product.store_id ?? activeStoreId),
-        }))
-        .filter(
-          (product: Product) =>
-            product.id > 0 &&
-            product.store_id === Number(activeStoreId) &&
-            product.stock > 0
-        );
-
-      setProducts(nextProducts);
+      setProducts(
+        raw
+          .map((p: any) => ({
+            id: Number(
+              p.product_id ?? p.id ?? 0
+            ),
+            name:
+              p.name ||
+              p.product_name ||
+              "",
+            sku: p.sku || "",
+            stock: Number(p.stock || 0),
+            store_id: Number(
+              p.store_id ?? activeStoreId
+            ),
+          }))
+          .filter(
+            (p: Product) =>
+              p.id > 0 &&
+              p.store_id === Number(activeStoreId) &&
+              p.stock > 0
+          )
+      );
     } finally {
       setLoadingProducts(false);
     }
@@ -1146,61 +1671,106 @@ export default function StoreTransfers({
       return;
     }
 
-    const data = await fetchJson(
-      `${API_BASE}/store_transfers/store_transfers_list.php?store_id=${encodeURIComponent(
-        activeStoreId
-      )}`
+    const d = await fetchJson(
+      `${API_BASE}/store_transfers/store_transfers_list.php?store_id=${activeStoreId}`
     );
 
-    const nextTransfers: Transfer[] = Array.isArray(data.transfers)
-      ? data.transfers.map((transfer: any) => ({
-          id: Number(transfer.id),
-          transferNo: transfer.transferNo || transfer.transfer_no || "",
-          fromStoreId: Number(transfer.fromStoreId ?? transfer.from_store_id),
-          fromStore: transfer.fromStore || "",
-          toStoreId: Number(transfer.toStoreId ?? transfer.to_store_id),
-          toStore: transfer.toStore || "",
-          status: transfer.status as TransferStatus,
-          notes: transfer.notes || "",
-          createdBy: transfer.createdBy || transfer.created_by || "",
-          receivedBy: transfer.receivedBy ?? transfer.received_by ?? null,
-          receivedAt: transfer.receivedAt ?? transfer.received_at ?? null,
-          cancelReason: transfer.cancelReason ?? transfer.cancel_reason ?? null,
-          createdAt: transfer.createdAt || transfer.created_at || "",
-          updatedAt: transfer.updatedAt || transfer.updated_at || "",
-          lines: Array.isArray(transfer.lines)
-            ? transfer.lines.map((line: any) => ({
-                id: Number(line.id),
-                productId: Number(line.source_product_id ?? line.productId ?? 0),
-                name: line.name || line.product_name || "",
-                sku: line.sku || "",
-                qty: Number(line.qty ?? line.quantity ?? 0),
-                received: Number(line.received ?? line.received_quantity ?? 0),
-                unitCost: Number(line.unitCost ?? line.unit_cost ?? 0),
-              }))
-            : [],
-        }))
-      : [];
-
-    setTransfers(nextTransfers);
+    setTransfers(
+      Array.isArray(d.transfers)
+        ? d.transfers.map((t: any) => ({
+            id: Number(t.id),
+            transferNo:
+              t.transferNo ||
+              t.transfer_no ||
+              "",
+            fromStoreId: Number(
+              t.fromStoreId ??
+                t.from_store_id
+            ),
+            fromStore: t.fromStore || "",
+            toStoreId: Number(
+              t.toStoreId ??
+                t.to_store_id
+            ),
+            toStore: t.toStore || "",
+            status:
+              t.status as TransferStatus,
+            notes: t.notes || "",
+            createdBy:
+              t.createdBy ||
+              t.created_by ||
+              "",
+            receivedBy:
+              t.receivedBy ??
+              t.received_by ??
+              null,
+            receivedAt:
+              t.receivedAt ??
+              t.received_at ??
+              null,
+            cancelReason:
+              t.cancelReason ??
+              t.cancel_reason ??
+              null,
+            createdAt:
+              t.createdAt ||
+              t.created_at ||
+              "",
+            updatedAt:
+              t.updatedAt ||
+              t.updated_at ||
+              "",
+            lines: Array.isArray(t.lines)
+              ? t.lines.map((l: any) => ({
+                  id: Number(l.id),
+                  productId: Number(
+                    l.source_product_id ??
+                      l.productId ??
+                      0
+                  ),
+                  name:
+                    l.name ||
+                    l.product_name ||
+                    "",
+                  sku: l.sku || "",
+                  qty: Number(
+                    l.qty ??
+                      l.quantity ??
+                      0
+                  ),
+                  received: Number(
+                    l.received ??
+                      l.received_quantity ??
+                      0
+                  ),
+                  unitCost: Number(
+                    l.unitCost ??
+                      l.unit_cost ??
+                      0
+                  ),
+                }))
+              : [],
+          }))
+        : []
+    );
   };
 
-  const refreshAll = async () => {
+  const refresh = async () => {
     setError("");
 
     try {
       setLoading(true);
+
       await Promise.all([
         loadStores(),
         loadProducts(),
         loadTransfers(),
       ]);
-    } catch (err) {
-      console.error("Store transfer load error:", err);
+    } catch (e) {
       setError(
-        err instanceof Error
-          ? err.message
-          : "Failed to load store transfer data."
+        e instanceof Error
+          ? e.message
+          : "Failed to load data."
       );
     } finally {
       setLoading(false);
@@ -1210,76 +1780,83 @@ export default function StoreTransfers({
   useEffect(() => {
     setPage(1);
     setDetail(null);
-    refreshAll();
+    refresh();
   }, [activeStoreId]);
 
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
 
-    return transfers.filter((transfer) => {
-      const matchesSearch =
-        !q ||
-        transfer.transferNo.toLowerCase().includes(q) ||
-        transfer.fromStore.toLowerCase().includes(q) ||
-        transfer.toStore.toLowerCase().includes(q) ||
-        transfer.lines.some(
-          (line) =>
-            line.name.toLowerCase().includes(q) ||
-            line.sku.toLowerCase().includes(q)
-        );
-
-      const matchesStatus =
-        !statusFilter || transfer.status === statusFilter;
-
-      const matchesStore =
-        !storeFilter ||
-        String(transfer.fromStoreId) === storeFilter ||
-        String(transfer.toStoreId) === storeFilter;
-
-      return matchesSearch && matchesStatus && matchesStore;
-    });
-  }, [transfers, search, statusFilter, storeFilter]);
+    return transfers.filter(
+      (t) =>
+        (!q ||
+          t.transferNo
+            .toLowerCase()
+            .includes(q) ||
+          t.fromStore
+            .toLowerCase()
+            .includes(q) ||
+          t.toStore
+            .toLowerCase()
+            .includes(q) ||
+          t.lines.some(
+            (l) =>
+              l.name
+                .toLowerCase()
+                .includes(q) ||
+              l.sku
+                .toLowerCase()
+                .includes(q)
+          )) &&
+        (!statusFilter ||
+          t.status === statusFilter) &&
+        (!storeFilter ||
+          String(t.fromStoreId) ===
+            storeFilter ||
+          String(t.toStoreId) ===
+            storeFilter)
+    );
+  }, [
+    transfers,
+    search,
+    statusFilter,
+    storeFilter,
+  ]);
 
   const paged = filtered.slice(
     (page - 1) * PER_PAGE,
     page * PER_PAGE
   );
 
-  const incomingPending = transfers.filter(
-    (transfer) =>
-      transfer.toStoreId === activeStoreId &&
-      (transfer.status === "in_transit" ||
-        transfer.status === "partial")
+  const inTransit = transfers.filter(
+    (t) =>
+      t.status === "in_transit" ||
+      t.status === "partial"
   ).length;
 
-  const outgoingPending = transfers.filter(
-    (transfer) =>
-      transfer.fromStoreId === activeStoreId &&
-      (transfer.status === "pending" ||
-        transfer.status === "in_transit")
+  const received = transfers.filter(
+    (t) => t.status === "received"
   ).length;
 
-  const receivedCount = transfers.filter(
-    (transfer) =>
-      transfer.toStoreId === activeStoreId &&
-      transfer.status === "received"
-  ).length;
-
-  const unitsInScope = transfers.reduce((sum, transfer) => {
-    if (transfer.status === "cancelled") return sum;
-    return sum + totalQty(transfer);
-  }, 0);
+  const units = transfers.reduce(
+    (s, t) =>
+      t.status === "cancelled"
+        ? s
+        : s + totalQty(t),
+    0
+  );
 
   if (!activeStoreId) {
     return (
       <div className="p-6">
         <Card className="p-10">
           <div className="text-center">
-            <p className="text-[14px] font-semibold text-[#0F172A]">
+            <p className="font-semibold">
               No store selected
             </p>
-            <p className="text-[12px] text-[#64748B] mt-1">
-              Select a store before managing store transfers.
+
+            <p className="text-[12px] text-slate-500 mt-1">
+              Select a store before managing delivery
+              receipts.
             </p>
           </div>
         </Card>
@@ -1289,36 +1866,39 @@ export default function StoreTransfers({
 
   return (
     <div className="p-6 space-y-5 max-w-[1350px]">
-      <div className="flex items-center justify-between">
+      <div className="flex items-center justify-between gap-3">
         <div>
           <h2 className="text-[18px] font-bold text-[#0F172A]">
             Store Transfers
           </h2>
+
           <p className="text-[12px] text-[#64748B] mt-0.5">
-            Real stock transfers between branches with receiving and audit trail.
+            Delivery receipts between branches with
+            receiving and audit trail.
           </p>
         </div>
 
-        <Button
-          variant="primary"
-          size="sm"
-          onClick={() => setShowCreate(true)}
-          disabled={loadingProducts || stores.length < 2}
-          icon={
-            <svg
-              width="13"
-              height="13"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="2"
-            >
-              <path d="M5 12h14M12 5l7 7-7 7" />
-            </svg>
-          }
-        >
-          New Transfer
-        </Button>
+        <div className="flex gap-2">
+          <Button
+            variant="secondary"
+            size="sm"
+            onClick={() => setShowReceived(true)}
+          >
+            Received
+          </Button>
+
+          <Button
+            variant="primary"
+            size="sm"
+            onClick={() => setShowGenerate(true)}
+            disabled={
+              loadingProducts ||
+              stores.length < 2
+            }
+          >
+            Generate Receipt
+          </Button>
+        </div>
       </div>
 
       {error && (
@@ -1327,35 +1907,35 @@ export default function StoreTransfers({
         </div>
       )}
 
-      <div className="grid grid-cols-2 lg:grid-cols-5 gap-3">
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
         {[
           {
-            label: "Transfers",
+            label: "Receipts",
             value: transfers.length,
           },
           {
-            label: "To Receive",
-            value: incomingPending,
-          },
-          {
-            label: "Outgoing",
-            value: outgoingPending,
+            label: "In Transit",
+            value: inTransit,
           },
           {
             label: "Received",
-            value: receivedCount,
+            value: received,
           },
           {
             label: "Units",
-            value: fmt(unitsInScope),
+            value: fmt(units),
           },
-        ].map((item) => (
-          <Card key={item.label} className="px-5 py-4">
-            <p className="text-[11px] text-[#64748B] mb-1">
-              {item.label}
+        ].map((x) => (
+          <Card
+            key={x.label}
+            className="px-5 py-4"
+          >
+            <p className="text-[11px] text-slate-500 mb-1">
+              {x.label}
             </p>
-            <p className="text-[20px] font-bold text-[#0F172A]">
-              {item.value}
+
+            <p className="text-[20px] font-bold">
+              {x.value}
             </p>
           </Card>
         ))}
@@ -1365,43 +1945,60 @@ export default function StoreTransfers({
         <div className="flex flex-wrap items-center gap-3">
           <SearchBar
             value={search}
-            onChange={(value) => {
-              setSearch(value);
+            onChange={(v) => {
+              setSearch(v);
               setPage(1);
             }}
-            placeholder="Transfer no, store, SKU, product..."
+            placeholder="DR no, store, SKU, product..."
           />
 
           <Select
             value={statusFilter}
-            onChange={(value) => {
-              setStatusFilter(value);
+            onChange={(v) => {
+              setStatusFilter(v);
               setPage(1);
             }}
             placeholder="All Status"
             options={[
-              { value: "pending", label: "Pending" },
-              { value: "in_transit", label: "In Transit" },
-              { value: "partial", label: "Partial" },
-              { value: "received", label: "Received" },
-              { value: "cancelled", label: "Cancelled" },
+              {
+                value: "in_transit",
+                label: "In Transit",
+              },
+              {
+                value: "partial",
+                label: "Partial",
+              },
+              {
+                value: "received",
+                label: "Received",
+              },
+              {
+                value: "cancelled",
+                label: "Cancelled",
+              },
+              {
+                value: "pending",
+                label: "Pending",
+              },
             ]}
           />
 
           <Select
             value={storeFilter}
-            onChange={(value) => {
-              setStoreFilter(value);
+            onChange={(v) => {
+              setStoreFilter(v);
               setPage(1);
             }}
             placeholder="All Stores"
-            options={stores.map((store) => ({
-              value: String(store.id),
-              label: storeLabel(store),
+            options={stores.map((s) => ({
+              value: String(s.id),
+              label: storeLabel(s),
             }))}
           />
 
-          {(search || statusFilter || storeFilter) && (
+          {(search ||
+            statusFilter ||
+            storeFilter) && (
             <button
               type="button"
               onClick={() => {
@@ -1410,53 +2007,52 @@ export default function StoreTransfers({
                 setStoreFilter("");
                 setPage(1);
               }}
-              className="text-[12px] text-[#64748B] underline"
+              className="text-[12px] underline text-slate-500"
             >
               Clear
             </button>
           )}
 
-          <span className="ml-auto text-[11px] text-[#94A3B8]">
-            {filtered.length} record{filtered.length !== 1 ? "s" : ""}
+          <span className="ml-auto text-[11px] text-slate-400">
+            {filtered.length} record
+            {filtered.length !== 1 ? "s" : ""}
           </span>
         </div>
       </Card>
 
       <Card>
-        <div className="px-5 py-3.5 border-b border-[#F1F5F9] flex items-center justify-between">
+        <div className="px-5 py-3.5 border-b flex items-center justify-between">
           <div>
-            <p className="text-[13px] font-semibold text-[#0F172A]">
-              Transfer Log
+            <p className="text-[13px] font-semibold">
+              Delivery Receipt Log
             </p>
-            <p className="text-[10px] text-[#94A3B8] mt-0.5">
-              Source stock decreases when sent. Destination stock increases when received.
+
+            <p className="text-[10px] text-slate-400 mt-0.5">
+              Click the DR No. to download the Excel
+              receipt. Use View for receiving details
+              and the PDF copy.
             </p>
           </div>
-          <span className="text-[10px] text-[#94A3B8]">
-            Store ID {activeStoreId}
-          </span>
         </div>
 
         {loading ? (
           <div className="py-14 text-center">
-            <div className="w-6 h-6 mx-auto rounded-full border-2 border-[#E2E8F0] border-t-[#4F46E5] animate-spin" />
-            <p className="text-[11px] text-[#94A3B8] mt-2">
-              Loading transfer records...
+            <div className="w-6 h-6 mx-auto rounded-full border-2 border-slate-200 border-t-indigo-500 animate-spin" />
+
+            <p className="text-[11px] text-slate-400 mt-2">
+              Loading records...
             </p>
           </div>
         ) : paged.length === 0 ? (
           <div className="py-14 text-center">
-            <p className="text-[13px] font-semibold text-[#0F172A]">
-              No transfer records found
-            </p>
-            <p className="text-[11px] text-[#94A3B8] mt-1">
-              Create a transfer to move inventory between stores.
+            <p className="text-[13px] font-semibold">
+              No delivery receipts found
             </p>
           </div>
         ) : (
           <Table
             headers={[
-              "Transfer",
+              "DR No.",
               "Date",
               "From",
               "To",
@@ -1466,70 +2062,73 @@ export default function StoreTransfers({
               "Action",
             ]}
           >
-            {paged.map((transfer) => (
+            {paged.map((t) => (
               <Tr
-                key={transfer.id}
-                onClick={() => setDetail(transfer)}
+                key={t.id}
+                onClick={() => setDetail(t)}
               >
                 <Td mono>
-                  <div>
-                    <p className="text-[11px] font-semibold text-[#4F46E5]">
-                      {transfer.transferNo}
-                    </p>
-                    <p className="text-[9px] text-[#94A3B8] mt-0.5">
-                      {transfer.createdBy}
-                    </p>
-                  </div>
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      void exportDeliveryReceipt(t);
+                    }}
+                    className="text-[11px] font-semibold text-indigo-600 hover:underline"
+                  >
+                    {t.transferNo}
+                  </button>
+
+                  <p className="text-[9px] text-slate-400 mt-0.5">
+                    {t.createdBy}
+                  </p>
                 </Td>
 
                 <Td>
-                  <span className="text-[11px] text-[#64748B]">
-                    {transfer.createdAt}
+                  <span className="text-[11px] text-slate-500">
+                    {t.createdAt}
                   </span>
                 </Td>
 
                 <Td>
-                  <span className="text-[11px] font-medium text-[#475569]">
-                    {transfer.fromStore}
+                  <span className="text-[11px] font-medium">
+                    {t.fromStore}
                   </span>
                 </Td>
 
                 <Td>
-                  <span className="text-[11px] font-semibold text-[#0F172A]">
-                    {transfer.toStore}
+                  <span className="text-[11px] font-semibold">
+                    {t.toStore}
                   </span>
                 </Td>
 
                 <Td>
-                  <span className="text-[11px] text-[#64748B]">
-                    {transfer.lines.length} SKU
-                    {transfer.lines.length !== 1 ? "s" : ""}
+                  <span className="text-[11px]">
+                    {t.lines.length} SKU
+                    {t.lines.length !== 1
+                      ? "s"
+                      : ""}
                   </span>
                 </Td>
 
                 <Td>
-                  <div>
-                    <span className="text-[11px] font-bold text-[#0F172A]">
-                      {fmt(totalQty(transfer))}
-                    </span>
-                    {transfer.status === "partial" && (
-                      <p className="text-[9px] text-amber-600 mt-0.5">
-                        {fmt(totalReceived(transfer))} received
-                      </p>
-                    )}
-                  </div>
+                  <span className="text-[11px] font-bold">
+                    {fmt(totalQty(t))}
+                  </span>
                 </Td>
 
-                <Td>{statusBadge(transfer.status)}</Td>
+                <Td>
+                  {statusBadge(t.status)}
+                </Td>
 
                 <Td>
                   <button
                     type="button"
-                    onClick={(event) => {
-                      event.stopPropagation();
-                      setDetail(transfer);
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setDetail(t);
                     }}
-                    className="h-7 px-3 rounded-lg bg-[#EEF2FF] text-[#4F46E5] text-[11px] font-semibold hover:bg-[#E0E7FF]"
+                    className="h-7 px-3 rounded-lg bg-indigo-50 text-indigo-600 text-[11px] font-semibold"
                   >
                     View
                   </button>
@@ -1547,14 +2146,29 @@ export default function StoreTransfers({
         />
       </Card>
 
-      {showCreate && (
-        <CreateTransferModal
+      {showGenerate && (
+        <GenerateReceiptModal
           activeStoreId={activeStoreId}
           stores={stores}
           products={products}
-          onClose={() => setShowCreate(false)}
+          onClose={() => setShowGenerate(false)}
           onCreated={async () => {
-            await Promise.all([loadTransfers(), loadProducts()]);
+            await Promise.all([
+              loadTransfers(),
+              loadProducts(),
+            ]);
+          }}
+        />
+      )}
+
+      {showReceived && (
+        <ReceiveByDRModal
+          onClose={() => setShowReceived(false)}
+          onReceived={async () => {
+            await Promise.all([
+              loadTransfers(),
+              loadProducts(),
+            ]);
           }}
         />
       )}
@@ -1565,7 +2179,10 @@ export default function StoreTransfers({
           activeStoreId={activeStoreId}
           onClose={() => setDetail(null)}
           onRefresh={async () => {
-            await Promise.all([loadTransfers(), loadProducts()]);
+            await Promise.all([
+              loadTransfers(),
+              loadProducts(),
+            ]);
           }}
         />
       )}

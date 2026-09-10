@@ -51,7 +51,7 @@ interface GeneralSettings {
   logo?: string | null;
 }
 
-const API_BASE = "https://sakuracareapi.site/rhea-pos-api";
+const API_BASE = "https://sakuracareapi.site/rhea-pos-api/settings";
 const DEFAULT_BUSINESS_NAME = "R&J POS";
 const DEFAULT_LOGO = "/logo2.png";
 
@@ -78,8 +78,8 @@ const navGroups = [
       { id: "inventory", label: "Inventory", icon: WarehouseIcon },
       { id: "stock-adjustments", label: "Stock Adjustments", icon: AdjustIcon },
       { id: "inventory-counts", label: "Inventory Counts", icon: AdjustIcon },
-      { id: "store-transfers", label: "Store Transfers", icon: TransferIcon },
-      { id: "delivery-report", label: "Delivery Receipts", icon: ClipboardIcon },
+      { id: "store-transfers", label: "Delivery Receipts", icon: TransferIcon },
+      { id: "delivery-report", label: "Delivery Purchase", icon: ClipboardIcon },
     ],
   },
   {

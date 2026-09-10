@@ -78,6 +78,14 @@ function statusBadge(status: CountStatus) {
   return <Badge variant="neutral">Draft</Badge>;
 }
 
+function firstValidCost(...values: unknown[]) {
+  for (const value of values) {
+    const number = Number(value);
+    if (Number.isFinite(number) && number > 0) return number;
+  }
+  return 0;
+}
+
 export default function InventoryCount({
   activeStoreId = null,
 }: InventoryCountProps) {
@@ -89,6 +97,7 @@ export default function InventoryCount({
   const [counts, setCounts] = useState<InventoryCount[]>([]);
   const [products, setProducts] = useState<Product[]>([]);
   const [countItems, setCountItems] = useState<CountItem[]>([]);
+  const [averageCosts, setAverageCosts] = useState<Record<string, number>>({});
 
   const [loadingStores, setLoadingStores] = useState(false);
   const [loadingCounts, setLoadingCounts] = useState(false);
@@ -192,6 +201,78 @@ export default function InventoryCount({
     }
   };
 
+  /*
+   * LOAD THE SAME AVERAGE PURCHASE COST USED BY PRODUCTS
+   *
+   * Backend:
+   * /inventory/purchase-average-cost.php
+   *
+   * Formula from the backend:
+   * SUM(received_quantity * unit_cost) / SUM(received_quantity)
+   *
+   * The result is keyed by product_id.
+   */
+  const loadAverageCosts = async (storeId: number) => {
+    try {
+      const response = await fetch(
+        `${API_BASE}/inventory/purchase-average-cost.php?store_id=${encodeURIComponent(
+          String(storeId)
+        )}`,
+        {
+          method: "GET",
+          headers: {
+            Accept: "application/json",
+          },
+        }
+      );
+
+      const text = await response.text();
+      let data: any;
+
+      try {
+        data = JSON.parse(text);
+      } catch {
+        throw new Error(
+          `Average cost API did not return valid JSON:\n${text.substring(0, 500)}`
+        );
+      }
+
+      if (!response.ok || !data.success) {
+        throw new Error(
+          data.message || "Failed to load average purchase costs."
+        );
+      }
+
+      const costs =
+        data.average_costs &&
+        typeof data.average_costs === "object"
+          ? data.average_costs
+          : {};
+
+      setAverageCosts(
+        Object.fromEntries(
+          Object.entries(costs).map(([productId, value]) => [
+            String(productId),
+            Number(value) || 0,
+          ])
+        )
+      );
+    } catch (e) {
+      console.warn(
+        "Average purchase cost could not be loaded:",
+        e
+      );
+      setAverageCosts({});
+    }
+  };
+
+  const getProductAverageCost = (productId: number, fallback = 0) => {
+    const apiCost = averageCosts[String(productId)];
+    return Number.isFinite(apiCost) && apiCost > 0
+      ? apiCost
+      : Number(fallback) || 0;
+  };
+
   const loadProducts = async (storeId = selectedStoreId) => {
     if (!storeId) {
       setProducts([]);
@@ -227,7 +308,16 @@ export default function InventoryCount({
             name: String(item.name ?? item.product_name ?? "").trim(),
             sku: item.sku ?? item.product_sku ?? null,
             stock: Number(item.stock ?? item.quantity ?? 0),
-            cost: Number(item.cost ?? item.average_cost ?? 0),
+            cost: firstValidCost(
+              item.cost,
+              item.average_cost,
+              item.unit_cost,
+              item.last_cost,
+              item.purchase_cost,
+              item.cost_price,
+              item.purchase_price,
+              item.buy_price
+            ),
           }))
           .filter((p: Product) => p.id > 0 && p.name)
       );
@@ -253,6 +343,7 @@ export default function InventoryCount({
     if (!selectedStoreId) {
       setCounts([]);
       setProducts([]);
+      setAverageCosts({});
       return;
     }
 
@@ -261,6 +352,7 @@ export default function InventoryCount({
     Promise.all([
       loadCounts(selectedStoreId),
       loadProducts(selectedStoreId),
+      loadAverageCosts(selectedStoreId),
     ]).catch(console.error);
   }, [selectedStoreId, statusFilter]);
 
@@ -326,7 +418,7 @@ export default function InventoryCount({
               sku: product.sku,
               expected_stock: product.stock,
               counted_stock: "",
-              cost: product.cost,
+              cost: getProductAverageCost(product.id, product.cost),
             },
           ]
     );
@@ -436,7 +528,21 @@ export default function InventoryCount({
             item.counted_stock === null || item.counted_stock === undefined
               ? ""
               : String(item.counted_stock),
-          cost: Number(item.cost ?? item.average_cost ?? 0),
+          // IMPORTANT:
+          // Once the count item has been created, inventory_count_items.cost
+          // is the saved snapshot cost for this count. Never replace it with
+          // the current purchase-average-cost API value when reopening.
+          cost: firstValidCost(
+            item.cost,
+            item.average_cost,
+            item.unit_cost,
+            item.last_cost,
+            item.purchase_cost,
+            item.cost_price,
+            item.purchase_price,
+            item.buy_price,
+            products.find((p) => p.id === Number(item.product_id))?.cost
+          ),
         }))
       );
       setShowCountModal(true);
@@ -449,9 +555,121 @@ export default function InventoryCount({
     }
   };
 
-  const saveCount = async (complete = false) => {
-    if (!countId) return;
+  const exportCountPdf = () => {
+    if (!selectedCount) {
+      setError("Open an inventory count before exporting.");
+      return;
+    }
 
+    const popup = window.open("", "_blank", "width=1200,height=800");
+    if (!popup) {
+      setError("Please allow pop-ups to export the inventory count.");
+      return;
+    }
+
+    const escapeHtml = (value: unknown) =>
+      String(value ?? "")
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;")
+        .replace(/'/g, "&#039;");
+
+    const rows = countItems.map((item) => {
+      const counted = Number(item.counted_stock);
+      const hasCount = item.counted_stock !== "";
+      const difference = hasCount ? counted - Number(item.expected_stock) : 0;
+      const costDifference = difference * Number(item.cost || 0);
+
+      return `
+        <tr>
+          <td><strong>${escapeHtml(item.name)}</strong><div class="muted">${escapeHtml(item.sku || "No SKU")}</div></td>
+          <td>${escapeHtml(fmtQty(item.expected_stock))}</td>
+          <td>${hasCount ? escapeHtml(fmtQty(counted)) : "—"}</td>
+          <td class="${difference < 0 ? "negative" : difference > 0 ? "positive" : ""}">${hasCount ? escapeHtml(fmtQty(difference)) : "—"}</td>
+          <td>${escapeHtml(money(Number(item.cost || 0)))}</td>
+          <td class="${costDifference < 0 ? "negative" : costDifference > 0 ? "positive" : ""}">${hasCount ? escapeHtml(money(costDifference)) : "—"}</td>
+        </tr>`;
+    }).join("");
+
+    const expectedTotal = countItems.reduce(
+      (sum, item) => sum + Number(item.expected_stock || 0),
+      0
+    );
+
+    popup.document.open();
+    popup.document.write(`
+      <!doctype html>
+      <html>
+      <head>
+        <meta charset="utf-8" />
+        <title>${escapeHtml(`Inventory Count ${selectedCount.count_no || ""}`)}</title>
+        <style>
+          @page { size: A4 landscape; margin: 14mm; }
+          * { box-sizing: border-box; }
+          body { font-family: Arial, Helvetica, sans-serif; color:#0f172a; margin:0; font-size:12px; }
+          h1 { margin:0 0 4px; font-size:22px; }
+          h2 { margin:0; font-size:13px; color:#475569; }
+          .header { display:flex; justify-content:space-between; gap:20px; border-bottom:2px solid #e2e8f0; padding-bottom:12px; margin-bottom:14px; }
+          .meta { display:grid; grid-template-columns:repeat(4,1fr); gap:8px; margin-bottom:14px; }
+          .box { border:1px solid #e2e8f0; border-radius:6px; padding:9px; }
+          .label { color:#64748b; font-size:9px; margin-bottom:3px; }
+          .value { font-weight:700; }
+          .notes { border:1px solid #e2e8f0; border-radius:6px; padding:10px; margin-bottom:14px; white-space:pre-wrap; }
+          table { width:100%; border-collapse:collapse; page-break-inside:auto; }
+          thead { display:table-header-group; }
+          tr { page-break-inside:avoid; }
+          th,td { border:1px solid #dbe2ea; padding:7px 8px; text-align:left; vertical-align:top; }
+          th { background:#f8fafc; color:#475569; font-size:9px; text-transform:uppercase; }
+          .muted { color:#64748b; font-size:9px; margin-top:2px; }
+          .negative { color:#dc2626; font-weight:700; }
+          .positive { color:#059669; font-weight:700; }
+          .summary { display:flex; justify-content:flex-end; margin-top:14px; }
+          .summary .box { min-width:240px; }
+          .print-note { margin-top:12px; color:#94a3b8; font-size:9px; }
+          @media print { .print-note { display:none; } }
+        </style>
+      </head>
+      <body>
+        <div class="header">
+          <div>
+            <h1>Inventory Count ${escapeHtml(selectedCount.count_no || "")}</h1>
+            <h2>${escapeHtml(selectedStore?.branch_name || selectedStore?.store_name || `Store #${selectedCount.store_id}`)}</h2>
+          </div>
+          <div class="box"><div class="label">Status</div><div class="value">${escapeHtml(selectedCount.status)}</div></div>
+        </div>
+        <div class="meta">
+          <div class="box"><div class="label">Type</div><div class="value">${escapeHtml(selectedCount.type === "full" ? "Full" : "Partial")}</div></div>
+          <div class="box"><div class="label">Created</div><div class="value">${escapeHtml(selectedCount.created_at)}</div></div>
+          <div class="box"><div class="label">Completed</div><div class="value">${escapeHtml(selectedCount.completed_at || "—")}</div></div>
+          <div class="box"><div class="label">Expected Stock</div><div class="value">${escapeHtml(fmtQty(expectedTotal))}</div></div>
+        </div>
+        <div class="notes"><div class="label">Notes</div><div>${escapeHtml(selectedCount.notes || "No notes")}</div></div>
+        <table>
+          <thead><tr><th>Item</th><th>Expected</th><th>Counted</th><th>Difference</th><th>Unit Cost</th><th>Cost Difference</th></tr></thead>
+          <tbody>${rows || `<tr><td colspan="6">No items</td></tr>`}</tbody>
+        </table>
+        <div class="summary">
+          <div class="box">
+            <div class="label">Total Quantity Difference</div>
+            <div class="value">${escapeHtml(fmtQty(totalDifference))}</div>
+            <div class="label" style="margin-top:8px;">Total Cost Difference</div>
+            <div class="value">${escapeHtml(money(totalCostDifference))}</div>
+          </div>
+        </div>
+        <div class="print-note">Choose "Save as PDF" in the browser print dialog to save this report as a PDF.</div>
+        <script>window.onload=function(){setTimeout(function(){window.print();},250);};</script>
+      </body>
+      </html>
+    `);
+    popup.document.close();
+  };
+
+ const saveCount = async (complete = false) => {
+  if (!countId) return;
+
+  // Only require every item when completing the count.
+  if (complete) {
     const incomplete = countItems.some(
       (item) =>
         item.counted_stock === "" ||
@@ -460,55 +678,60 @@ export default function InventoryCount({
     );
 
     if (incomplete) {
-      setError("Enter a counted quantity for every item before saving.");
+      setError("Enter a counted quantity for every item before completing.");
       return;
     }
+  }
 
-    try {
-      setSaving(true);
-      setError("");
-      setSuccess("");
+  try {
+    setSaving(true);
+    setError("");
+    setSuccess("");
 
-      const response = await fetch(`${API_BASE}/inventory/count-save.php`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Accept: "application/json",
-        },
-        body: JSON.stringify({
-          count_id: countId,
-          complete,
-          items: countItems.map((item) => ({
-            product_id: item.product_id,
-            counted_stock: Number(item.counted_stock),
-          })),
-        }),
-      });
+    const response = await fetch(`${API_BASE}/inventory/count-save.php`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Accept: "application/json",
+      },
+      body: JSON.stringify({
+        count_id: countId,
+        complete,
+        items: countItems.map((item) => ({
+          product_id: item.product_id,
+          counted_stock:
+            item.counted_stock === ""
+              ? null
+              : Number(item.counted_stock),
+        })),
+      }),
+    });
 
-      const data = await response.json();
+    const data = await response.json();
 
-      if (!response.ok || !data.success) {
-        throw new Error(data.message || "Failed to save inventory count.");
-      }
-
-      setShowCountModal(false);
-      setSelectedCount(null);
-      await loadCounts(selectedStoreId);
-
-      setSuccess(
-        data.message ||
-          (complete
-            ? "Inventory count completed successfully."
-            : "Inventory count saved successfully.")
-      );
-    } catch (e) {
-      setError(
-        e instanceof Error ? e.message : "Unable to save inventory count."
-      );
-    } finally {
-      setSaving(false);
+    if (!response.ok || !data.success) {
+      throw new Error(data.message || "Failed to save inventory count.");
     }
-  };
+
+    setShowCountModal(false);
+    setSelectedCount(null);
+
+    await loadCounts(selectedStoreId);
+
+    setSuccess(
+      data.message ||
+        (complete
+          ? "Inventory count completed successfully."
+          : "Inventory count saved successfully.")
+    );
+  } catch (e) {
+    setError(
+      e instanceof Error ? e.message : "Unable to save inventory count."
+    );
+  } finally {
+    setSaving(false);
+  }
+};
 
   const pagedCounts = counts.slice(
     (page - 1) * PER_PAGE,
@@ -735,13 +958,19 @@ export default function InventoryCount({
       </Card>
 
       {showCreateModal && (
-        <Modal
-          title="New Inventory Count"
-          onClose={() => {
-            if (!saving) setShowCreateModal(false);
-          }}
-        >
-          <div className="space-y-4">
+        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-slate-900/50 p-3 sm:p-6">
+          <div className="w-full max-w-4xl max-h-[94vh] overflow-hidden rounded-2xl bg-white shadow-2xl flex flex-col">
+            <div className="flex items-center justify-between gap-4 px-5 sm:px-6 py-4 border-b border-[#E2E8F0] shrink-0">
+              <div>
+                <h2 className="text-[16px] font-semibold text-[#0F172A]">New Inventory Count</h2>
+                <p className="text-[10px] text-[#94A3B8] mt-0.5">Create a stock count for the selected branch.</p>
+              </div>
+              <button type="button" onClick={() => { if (!saving) setShowCreateModal(false); }} disabled={saving}
+                className="w-8 h-8 rounded-lg text-[#64748B] hover:bg-[#F8FAFC] text-xl disabled:opacity-40" aria-label="Close">×</button>
+            </div>
+            <div className="overflow-y-auto p-5 sm:p-6">
+              <div className="space-y-4">
+
             <div>
               <label className="text-[12px] font-medium text-[#374151] block mb-1">
                 Branch
@@ -926,22 +1155,32 @@ export default function InventoryCount({
                 Cancel
               </Button>
             </div>
+              </div>
+            </div>
           </div>
-        </Modal>
+        </div>
       )}
 
       {showCountModal && (
-        <Modal
-          title={
-            selectedCount?.status === "completed"
-              ? `Inventory Count ${selectedCount.count_no || ""}`
-              : `Count Stock ${selectedCount?.count_no || ""}`
-          }
-          onClose={() => {
-            if (!saving) setShowCountModal(false);
-          }}
-        >
-          <div className="space-y-4">
+        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-slate-900/50 p-3 sm:p-6">
+          <div className="w-full max-w-6xl max-h-[94vh] overflow-hidden rounded-2xl bg-white shadow-2xl flex flex-col">
+            <div className="flex items-center justify-between gap-4 px-5 sm:px-6 py-4 border-b border-[#E2E8F0] shrink-0">
+              <div>
+                <h2 className="text-[16px] font-semibold text-[#0F172A]">
+                  {selectedCount?.status === "completed"
+                    ? `Inventory Count ${selectedCount.count_no || ""}`
+                    : `Count Stock ${selectedCount?.count_no || ""}`}
+                </h2>
+                <p className="text-[10px] text-[#94A3B8] mt-0.5">
+                  {selectedStore?.branch_name || selectedStore?.store_name || `Store #${selectedCount?.store_id ?? ""}`}
+                </p>
+              </div>
+              <button type="button" onClick={() => { if (!saving) setShowCountModal(false); }} disabled={saving}
+                className="w-8 h-8 rounded-lg text-[#64748B] hover:bg-[#F8FAFC] text-xl disabled:opacity-40" aria-label="Close">×</button>
+            </div>
+            <div className="overflow-y-auto p-5 sm:p-6">
+              <div className="space-y-4">
+
             <div className="grid grid-cols-2 gap-3">
               <div className="p-3 rounded-lg bg-[#F8FAFC] border border-[#E2E8F0]">
                 <p className="text-[10px] text-[#94A3B8]">Expected</p>
@@ -970,11 +1209,18 @@ export default function InventoryCount({
               </div>
             </div>
 
+            <div className="p-3 rounded-lg bg-[#F8FAFC] border border-[#E2E8F0]">
+              <p className="text-[10px] text-[#94A3B8]">Notes</p>
+              <p className="mt-1 text-[12px] text-[#475569] whitespace-pre-wrap break-words">
+                {selectedCount?.notes?.trim() || "No notes"}
+              </p>
+            </div>
+
             <div className="overflow-x-auto border border-[#E2E8F0] rounded-lg">
               <table className="w-full min-w-[680px] text-left">
                 <thead className="bg-[#F8FAFC] border-b border-[#E2E8F0]">
                   <tr>
-                    {["Item", "Expected", "Counted", "Difference", "Cost Difference"].map(
+                    {["Item", "Expected", "Counted", "Difference", "Unit Cost", "Cost Difference"].map(
                       (header) => (
                         <th
                           key={header}
@@ -1044,6 +1290,9 @@ export default function InventoryCount({
                         >
                           {hasCount ? fmtQty(difference) : "—"}
                         </td>
+                        <td className="px-3 py-3 text-[12px] text-[#475569]">
+                          {money(Number(item.cost || 0))}
+                        </td>
                         <td className="px-3 py-3 text-[12px]">
                           {hasCount ? money(costDifference) : "—"}
                         </td>
@@ -1082,6 +1331,12 @@ export default function InventoryCount({
               </div>
             )}
 
+            <div className="flex flex-wrap items-center gap-3">
+              <Button variant="secondary" onClick={exportCountPdf} disabled={saving}>
+                Export PDF
+              </Button>
+            </div>
+
             {selectedCount?.status !== "completed" && (
               <div className="flex flex-wrap gap-3">
                 <Button
@@ -1107,8 +1362,10 @@ export default function InventoryCount({
                 </Button>
               </div>
             )}
+              </div>
+            </div>
           </div>
-        </Modal>
+        </div>
       )}
     </div>
   );
