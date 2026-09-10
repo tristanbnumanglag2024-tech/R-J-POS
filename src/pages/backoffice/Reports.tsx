@@ -9,6 +9,9 @@ import {
   CartesianGrid,
   Tooltip,
   ResponsiveContainer,
+  PieChart,
+  Pie,
+  Cell,
 } from "recharts";
 import { Card, Button } from "../../components/ui";
 
@@ -45,7 +48,8 @@ type ReportType =
   | "Purchased Order Report"
   | "Product History"
   | "Employee Sales"
-  | "Store Transfer Report";
+  | "Store Transfer Report"
+  | "Delivery Report";
 
 type ReportFrequency = "daily" | "weekly" | "monthly" | "yearly";
 type ReportScope = "current" | "all";
@@ -111,6 +115,20 @@ type GeneratedReportData = {
     transactions: number;
     total_sales: number;
     total_paid: number;
+  }>;
+  delivery?: Array<{
+    id: number;
+    delivery_no: string;
+    store_id: number;
+    branch_name: string;
+    delivery_date: string;
+    supplier_name: string;
+    po_number: string | null;
+    invoice_no: string | null;
+    item_count: number;
+    received_by: string;
+    status: string;
+    notes: string | null;
   }>;
   transfers?: Array<{
     item_id: number;
@@ -266,6 +284,7 @@ export default function Reports({
   activeStoreId,
 }: ReportsProps) {
   const [sales, setSales] = useState<Sale[]>([]);
+  const [categorySales, setCategorySales] = useState<{ name: string; value: number }[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
 
@@ -385,6 +404,93 @@ export default function Reports({
       mounted = false;
     };
   }, []);
+
+  /*
+  |--------------------------------------------------------------------------
+  | SALES BY CATEGORY
+  |--------------------------------------------------------------------------
+  |
+  | Uses the same Dashboard category-sales source.
+  | For All Stores, category sales are combined across active branches.
+  |--------------------------------------------------------------------------
+  */
+
+  useEffect(() => {
+    let mounted = true;
+
+    const loadCategorySales = async () => {
+      const targetStoreIds =
+        reportScope === "all"
+          ? reportStores
+              .filter((store) => store.status !== "inactive")
+              .map((store) => store.id)
+          : reportStoreId
+            ? [reportStoreId]
+            : [];
+
+      if (targetStoreIds.length === 0) {
+        if (mounted) setCategorySales([]);
+        return;
+      }
+
+      try {
+        const responses = await Promise.all(
+          targetStoreIds.map(async (storeId) => {
+            const response = await fetch(
+              `${API_BASE}/dashboard/stats.php?store_id=${encodeURIComponent(
+                String(storeId)
+              )}`,
+              {
+                method: "GET",
+                headers: { Accept: "application/json" },
+              }
+            );
+
+            const data = await response.json();
+
+            if (!response.ok || !data.success) {
+              throw new Error(
+                data.message ||
+                  `Unable to load category sales for store ${storeId}.`
+              );
+            }
+
+            return Array.isArray(data.byCategory)
+              ? data.byCategory
+              : [];
+          })
+        );
+
+        const map: Record<string, number> = {};
+
+        responses.flat().forEach((row: any) => {
+          const name =
+            String(row.name ?? "Uncategorized").trim() ||
+            "Uncategorized";
+          map[name] =
+            (map[name] || 0) + Number(row.value || 0);
+        });
+
+        if (mounted) {
+          setCategorySales(
+            Object.entries(map)
+              .map(([name, value]) => ({ name, value }))
+              .sort((a, b) => b.value - a.value)
+              .slice(0, 8)
+          );
+        }
+      } catch (err) {
+        console.error("Reports category sales error:", err);
+        if (mounted) setCategorySales([]);
+      }
+    };
+
+    void loadCategorySales();
+
+    return () => {
+      mounted = false;
+    };
+  }, [reportScope, reportStoreId, reportStores]);
 
   /*
   |--------------------------------------------------------------------------
@@ -748,6 +854,45 @@ export default function Reports({
 
   /*
   |--------------------------------------------------------------------------
+  | TOP BRANCH SALES
+  |--------------------------------------------------------------------------
+  */
+
+  const branchSales = useMemo(() => {
+    const branchMap = new Map<
+      number,
+      { name: string; sales: number; transactions: number }
+    >();
+
+    completedSales.forEach((sale) => {
+      const store = reportStores.find(
+        (item) => item.id === sale.store_id
+      );
+
+      const name =
+        store?.branch_name ||
+        `Store #${sale.store_id}`;
+
+      const current =
+        branchMap.get(sale.store_id) || {
+          name,
+          sales: 0,
+          transactions: 0,
+        };
+
+      current.sales += Number(sale.total || 0);
+      current.transactions += 1;
+
+      branchMap.set(sale.store_id, current);
+    });
+
+    return Array.from(branchMap.values())
+      .sort((a, b) => b.sales - a.sales)
+      .slice(0, 10);
+  }, [completedSales, reportStores]);
+
+  /*
+  |--------------------------------------------------------------------------
   | CASHIER PERFORMANCE
   |--------------------------------------------------------------------------
   */
@@ -871,6 +1016,7 @@ export default function Reports({
       "Product History": "product_history",
       "Employee Sales": "employee_sales",
       "Store Transfer Report": "transfers",
+      "Delivery Report": "delivery",
     };
 
     try {
@@ -933,6 +1079,125 @@ export default function Reports({
 
         apiEndDate =
           `${endYear}-12-31`;
+      }
+
+      if (type === "Delivery Report") {
+        const targetStoreIds =
+          reportScope === "all"
+            ? reportStores
+                .filter((store) => store.status !== "inactive")
+                .map((store) => store.id)
+            : [reportStoreId];
+
+        const responses = await Promise.all(
+          targetStoreIds.map(async (storeId) => {
+            const response = await fetch(
+              `${API_BASE}/delivery-records/list.php?store_id=${encodeURIComponent(
+                String(storeId)
+              )}`,
+              {
+                method: "GET",
+                headers: { Accept: "application/json" },
+              }
+            );
+
+            const data = await response.json();
+
+            if (!response.ok || !data.success) {
+              throw new Error(
+                data.message ||
+                  `Unable to load delivery records for store ${storeId}.`
+              );
+            }
+
+            return Array.isArray(data.records)
+              ? data.records
+              : [];
+          })
+        );
+
+        const deliveryRows = responses
+          .flat()
+          .map((row: any) => {
+            const store = reportStores.find(
+              (item) => item.id === Number(row.store_id)
+            );
+
+            return {
+              id: Number(row.id),
+              delivery_no: String(row.delivery_no ?? ""),
+              store_id: Number(row.store_id ?? 0),
+              branch_name:
+                store?.branch_name ||
+                String(
+                  row.branch_name ??
+                    `Store #${row.store_id ?? "?"}`
+                ),
+              delivery_date: String(row.delivery_date ?? ""),
+              supplier_name: String(
+                row.supplier_name ??
+                  row.supplier ??
+                  ""
+              ),
+              po_number:
+                row.po_number == null
+                  ? null
+                  : String(row.po_number),
+              invoice_no:
+                row.invoice_no == null
+                  ? null
+                  : String(row.invoice_no),
+              item_count: Number(
+                row.item_count ?? 0
+              ),
+              received_by: String(
+                row.received_by ?? ""
+              ),
+              status: String(
+                row.status ?? "pending"
+              ),
+              notes:
+                row.notes == null
+                  ? null
+                  : String(row.notes),
+            };
+          })
+          .filter((row) => {
+            if (!row.delivery_date) return false;
+            return (
+              row.delivery_date >= apiStartDate &&
+              row.delivery_date <= apiEndDate
+            );
+          })
+          .sort((a, b) =>
+            `${b.delivery_date}-${b.id}`.localeCompare(
+              `${a.delivery_date}-${a.id}`
+            )
+          );
+
+        setGeneratedReport(type);
+        setGeneratedData({
+          report_type: "delivery",
+          scope: reportScope,
+          branch_name:
+            reportScope === "all"
+              ? null
+              : reportStores.find(
+                  (store) => store.id === reportStoreId
+                )?.branch_name || null,
+          start_date: apiStartDate,
+          end_date: apiEndDate,
+          frequency: reportFrequency,
+          summary: {
+            deliveries: deliveryRows.length,
+            items: deliveryRows.reduce(
+              (sum, row) => sum + row.item_count,
+              0
+            ),
+          },
+          delivery: deliveryRows,
+        });
+        return;
       }
 
       const params = new URLSearchParams({
@@ -1374,6 +1639,12 @@ export default function Reports({
       desc:
         "Products transferred between stores",
     },
+    {
+      icon: "🚚",
+      name: "Delivery Report",
+      desc:
+        "Incoming delivery records, suppliers and PO details",
+    },
   ];
 
   /*
@@ -1558,18 +1829,18 @@ export default function Reports({
 
         <div className="flex flex-wrap items-end gap-2">
 
-          {/* CENTRALIZED STORE SELECTOR */}
-          <div className="min-w-[190px]">
-            <label className="text-[10px] font-medium text-[#64748B] block mb-1">
+          <div>
+            <label className="text-[11px] font-medium text-[#64748B] block mb-1">
               Store
             </label>
+
             <select
               value={
                 reportScope === "all"
                   ? "all"
                   : reportStoreId
-                  ? String(reportStoreId)
-                  : ""
+                    ? String(reportStoreId)
+                    : ""
               }
               onChange={(e) => {
                 const value = e.target.value;
@@ -1579,8 +1850,7 @@ export default function Reports({
                   setReportStoreId(
                     activeStoreId ??
                       reportStores.find(
-                        (store) =>
-                          store.status !== "inactive"
+                        (store) => store.status !== "inactive"
                       )?.id ??
                       null
                   );
@@ -1605,14 +1875,10 @@ export default function Reports({
               }}
               className="w-full h-9 px-3 text-[12px] rounded-lg border border-[#E2E8F0] bg-white"
             >
-              <option value="all">
-                All Stores
-              </option>
-
+              <option value="all">All Stores</option>
               {reportStores
                 .filter(
-                  (store) =>
-                    store.status !== "inactive"
+                  (store) => store.status !== "inactive"
                 )
                 .map((store) => (
                   <option
@@ -1660,14 +1926,7 @@ export default function Reports({
             Export CSV
           </Button>
 
-          <Button
-            variant="secondary"
-            size="sm"
-            onClick={printReport}
-          >
-            Print Report
-          </Button>
-
+         
         </div>
       </div>
 
@@ -1742,8 +2001,8 @@ export default function Reports({
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
 
+        {/* REVENUE TREND */}
         <Card className="lg:col-span-2 p-5">
-
           <div className="mb-4">
             <h3 className="text-[14px] font-semibold text-[#0F172A]">
               Revenue Trend
@@ -1754,13 +2013,8 @@ export default function Reports({
             </p>
           </div>
 
-          <ResponsiveContainer
-            width="100%"
-            height={250}
-          >
-            <AreaChart
-              data={revenueChart}
-            >
+          <ResponsiveContainer width="100%" height={250}>
+            <AreaChart data={revenueChart}>
               <defs>
                 <linearGradient
                   id="reportRevenue"
@@ -1769,16 +2023,8 @@ export default function Reports({
                   x2="0"
                   y2="1"
                 >
-                  <stop
-                    offset="5%"
-                    stopColor="#4F46E5"
-                    stopOpacity={0.18}
-                  />
-                  <stop
-                    offset="95%"
-                    stopColor="#4F46E5"
-                    stopOpacity={0}
-                  />
+                  <stop offset="5%" stopColor="#4F46E5" stopOpacity={0.18} />
+                  <stop offset="95%" stopColor="#4F46E5" stopOpacity={0} />
                 </linearGradient>
               </defs>
 
@@ -1789,32 +2035,22 @@ export default function Reports({
 
               <XAxis
                 dataKey="label"
-                tick={{
-                  fontSize: 10,
-                  fill: "#94A3B8",
-                }}
+                tick={{ fontSize: 10, fill: "#94A3B8" }}
                 axisLine={false}
                 tickLine={false}
               />
 
               <YAxis
-                tick={{
-                  fontSize: 10,
-                  fill: "#94A3B8",
-                }}
+                tick={{ fontSize: 10, fill: "#94A3B8" }}
                 axisLine={false}
                 tickLine={false}
                 tickFormatter={(v) =>
-                  `₱${(
-                    v / 1000
-                  ).toFixed(0)}k`
+                  `₱${(v / 1000).toFixed(0)}k`
                 }
               />
 
               <Tooltip
-                formatter={(
-                  value: unknown
-                ) => [
+                formatter={(value: unknown) => [
                   fmt(Number(value)),
                   "Revenue",
                 ]}
@@ -1829,13 +2065,77 @@ export default function Reports({
               />
             </AreaChart>
           </ResponsiveContainer>
-
         </Card>
 
-        {/* PAYMENT */}
-
+        {/* TOP BRANCH SALES */}
         <Card className="p-5">
+          <div className="mb-4">
+            <h3 className="text-[14px] font-semibold text-[#0F172A]">
+              Top Branch Sales
+            </h3>
+            <p className="text-[12px] text-[#64748B] mt-0.5">
+              Ranked by completed sales
+            </p>
+          </div>
 
+          {branchSales.length === 0 ? (
+            <div className="h-[250px] flex items-center justify-center text-[12px] text-[#94A3B8]">
+              No branch sales data
+            </div>
+          ) : (
+            <ResponsiveContainer width="100%" height={250}>
+              <BarChart
+                data={branchSales}
+                layout="vertical"
+                margin={{ left: 10, right: 10 }}
+              >
+                <CartesianGrid
+                  strokeDasharray="3 3"
+                  stroke="#F1F5F9"
+                  horizontal={false}
+                />
+                <XAxis
+                  type="number"
+                  tick={{ fontSize: 10, fill: "#94A3B8" }}
+                  axisLine={false}
+                  tickLine={false}
+                  tickFormatter={(v) =>
+                    `₱${(v / 1000).toFixed(0)}k`
+                  }
+                />
+                <YAxis
+                  type="category"
+                  dataKey="name"
+                  width={90}
+                  tick={{ fontSize: 10, fill: "#64748B" }}
+                  axisLine={false}
+                  tickLine={false}
+                />
+                <Tooltip
+                  formatter={(value: unknown) => [
+                    fmt(Number(value)),
+                    "Sales",
+                  ]}
+                />
+                <Bar
+                  dataKey="sales"
+                  fill="#4F46E5"
+                  radius={[0, 5, 5, 0]}
+                  maxBarSize={24}
+                />
+              </BarChart>
+            </ResponsiveContainer>
+          )}
+        </Card>
+
+      </div>
+
+      {/* PAYMENT + CATEGORY — SAME CARD SIZE */}
+
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+
+        {/* PAYMENT */}
+        <Card className="p-5">
           <h3 className="text-[14px] font-semibold text-[#0F172A]">
             Payment Methods
           </h3>
@@ -1844,61 +2144,106 @@ export default function Reports({
             Completed transaction collection
           </p>
 
-          {paymentBreakdown.length ===
-          0 ? (
-            <div className="py-12 text-center text-[12px] text-[#94A3B8]">
+          {paymentBreakdown.length === 0 ? (
+            <div className="h-[160px] flex items-center justify-center text-[12px] text-[#94A3B8]">
               No payment data
             </div>
           ) : (
             <div className="space-y-4">
+              {paymentBreakdown.map((payment) => (
+                <div key={payment.method}>
+                  <div className="flex justify-between mb-1">
+                    <span className="text-[12px] text-[#374151]">
+                      {payment.method}
+                    </span>
 
-              {paymentBreakdown.map(
-                (payment) => (
-                  <div
-                    key={payment.method}
-                  >
-                    <div className="flex justify-between mb-1">
-
-                      <span className="text-[12px] text-[#374151]">
-                        {payment.method}
-                      </span>
-
-                      <span className="text-[12px] font-semibold text-[#0F172A]">
-                        {fmt(
-                          payment.amount
-                        )}
-                      </span>
-
-                    </div>
-
-                    <div className="h-2 rounded-full bg-[#F1F5F9] overflow-hidden">
-
-                      <div
-                        className="h-full rounded-full bg-[#4F46E5]"
-                        style={{
-                          width: `${Math.min(
-                            payment.percentage,
-                            100
-                          )}%`,
-                        }}
-                      />
-
-                    </div>
-
-                    <p className="text-[10px] text-[#94A3B8] mt-1">
-                      {payment.percentage.toFixed(
-                        1
-                      )}
-                      %
-                    </p>
-
+                    <span className="text-[12px] font-semibold text-[#0F172A]">
+                      {fmt(payment.amount)}
+                    </span>
                   </div>
-                )
-              )}
 
+                  <div className="h-2 rounded-full bg-[#F1F5F9] overflow-hidden">
+                    <div
+                      className="h-full rounded-full bg-[#4F46E5]"
+                      style={{
+                        width: `${Math.min(
+                          payment.percentage,
+                          100
+                        )}%`,
+                      }}
+                    />
+                  </div>
+
+                  <p className="text-[10px] text-[#94A3B8] mt-1">
+                    {payment.percentage.toFixed(1)}%
+                  </p>
+                </div>
+              ))}
             </div>
           )}
+        </Card>
 
+        {/* TOP CATEGORIES SALES */}
+        <Card className="p-5">
+          <div className="mb-4">
+            <h3 className="text-[14px] font-semibold text-[#0F172A]">
+              Top Categories Sales
+            </h3>
+            <p className="text-[12px] text-[#64748B] mt-0.5">
+              Sales by category, like Dashboard
+            </p>
+          </div>
+
+          {categorySales.length === 0 ? (
+            <div className="h-[160px] flex items-center justify-center text-[12px] text-[#94A3B8]">
+              No category sales data
+            </div>
+          ) : (
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3 items-center">
+              <ResponsiveContainer width="100%" height={180}>
+                <PieChart>
+                  <Pie
+                    data={categorySales}
+                    cx="50%"
+                    cy="50%"
+                    innerRadius={42}
+                    outerRadius={70}
+                    paddingAngle={2}
+                    dataKey="value"
+                    nameKey="name"
+                  >
+                    {categorySales.map((category, index) => (
+                      <Cell
+                        key={`${category.name}-${index}`}
+                      />
+                    ))}
+                  </Pie>
+                  <Tooltip
+                    formatter={(value: unknown) => [
+                      fmt(Number(value)),
+                      "Sales",
+                    ]}
+                  />
+                </PieChart>
+              </ResponsiveContainer>
+
+              <div className="space-y-2">
+                {categorySales.slice(0, 6).map((category) => (
+                  <div
+                    key={category.name}
+                    className="flex items-center justify-between gap-3"
+                  >
+                    <span className="text-[11px] text-[#64748B] truncate">
+                      {category.name}
+                    </span>
+                    <span className="text-[11px] font-medium text-[#374151] whitespace-nowrap">
+                      {fmt(category.value)}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
         </Card>
 
       </div>
@@ -2001,7 +2346,7 @@ export default function Reports({
           </h3>
 
           <p className="text-[12px] text-[#64748B]">
-            Choose the report, date range and frequency. The store selector above controls the entire Reports page.
+            Choose the report, date range and frequency. The store filter above controls the entire Reports page.
           </p>
         </div>
 
@@ -2138,10 +2483,9 @@ export default function Reports({
               <option value="yearly">Yearly</option>
             </select>
           </div>
-
         </div>
 
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-3">
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-6 gap-3">
           {reportTypes.map((report) => (
             <button
               key={report.name}
@@ -2453,6 +2797,100 @@ export default function Reports({
             </>
           )}
 
+          {generatedReport === "Delivery Report" && (
+            <>
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-6">
+                <InfoBox
+                  label="Deliveries"
+                  value={String(
+                    generatedData.summary?.deliveries || 0
+                  )}
+                />
+                <InfoBox
+                  label="Items"
+                  value={fmtQty(
+                    Number(
+                      generatedData.summary?.items || 0
+                    )
+                  )}
+                />
+                <InfoBox
+                  label="Start Date"
+                  value={dateLabel(
+                    generatedData.start_date
+                  )}
+                />
+                <InfoBox
+                  label="End Date"
+                  value={dateLabel(
+                    generatedData.end_date
+                  )}
+                />
+              </div>
+
+              <ReportTable
+                columns={[
+                  { label: "Store" },
+                  { label: "Delivery #" },
+                  { label: "Date" },
+                  { label: "Supplier" },
+                  { label: "PO #" },
+                  { label: "Invoice #" },
+                  { label: "Items", align: "right" },
+                  { label: "Received By" },
+                  { label: "Status" },
+                ]}
+              >
+                {generatedData.delivery?.map((row) => (
+                  <tr
+                    key={row.id}
+                    className="border-b border-[#F1F5F9]"
+                  >
+                    <td className="py-2">
+                      {row.branch_name}
+                    </td>
+                    <td className="py-2 font-mono">
+                      {row.delivery_no}
+                    </td>
+                    <td className="py-2">
+                      {dateLabel(row.delivery_date)}
+                    </td>
+                    <td className="py-2">
+                      {row.supplier_name || "—"}
+                    </td>
+                    <td className="py-2 font-mono">
+                      {row.po_number || "—"}
+                    </td>
+                    <td className="py-2 font-mono">
+                      {row.invoice_no || "—"}
+                    </td>
+                    <td className="py-2 text-right">
+                      {fmtQty(row.item_count)}
+                    </td>
+                    <td className="py-2">
+                      {row.received_by || "—"}
+                    </td>
+                    <td className="py-2 capitalize">
+                      {row.status}
+                    </td>
+                  </tr>
+                ))}
+
+                {(!generatedData.delivery ||
+                  generatedData.delivery.length === 0) && (
+                  <tr>
+                    <td
+                      colSpan={9}
+                      className="py-10 text-center text-[#94A3B8]"
+                    >
+                      No delivery records found for the selected date range.
+                    </td>
+                  </tr>
+                )}
+              </ReportTable>
+            </>
+          )}
+
           {generatedReport === "Product History" && (
             <>
               <div className="grid grid-cols-2 gap-3 mb-6">
@@ -2670,7 +3108,8 @@ export default function Reports({
             (generatedData.purchases?.length || 0) ||
             (generatedData.history?.length || 0) ||
             (generatedData.employees?.length || 0) ||
-            (generatedData.transfers?.length || 0)
+            (generatedData.transfers?.length || 0) ||
+            (generatedData.delivery?.length || 0)
           ) && (
             <div className="py-12 text-center text-[12px] text-[#94A3B8]">
               No data found for the selected date range and store scope.

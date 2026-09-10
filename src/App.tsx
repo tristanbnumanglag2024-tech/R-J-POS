@@ -2,7 +2,6 @@ import { useEffect, useState } from "react";
 
 // Auth
 import AdminLogin from "./pages/auth/AdminLogin";
-import POSLogin from "./pages/auth/POSLogin";
 
 // Back Office layout
 import Sidebar from "./components/Sidebar";
@@ -25,15 +24,12 @@ import PaymentMethods from "./pages/backoffice/PaymentMethods";
 import Suppliers from "./pages/backoffice/Suppliers";
 import PurchaseOrders from "./pages/backoffice/PurchaseOrders";
 import StockAdjustments from "./pages/backoffice/StockAdjustments";
+import InventoryCount from "./pages/backoffice/InventoryCount";
+import DeliveryReport from "./pages/backoffice/DeliveryReport";
 import CashManagement from "./pages/backoffice/CashManagement";
 import Reports from "./pages/backoffice/Reports";
 import Settings from "./pages/backoffice/Settings";
 
-// POS
-import POSMain from "./pages/pos/POSMain";
-import POSPayment from "./pages/pos/POSPayment";
-import POSSuccess from "./pages/pos/POSSuccess";
-import POSLockScreen from "./pages/pos/POSLockScreen";
 
 // ============================================================
 // TYPES
@@ -41,15 +37,7 @@ import POSLockScreen from "./pages/pos/POSLockScreen";
 
 type AppMode =
   | "admin-login"
-  | "pos-login"
-  | "back-office"
-  | "pos";
-
-type POSView =
-  | "main"
-  | "payment"
-  | "success"
-  | "locked";
+  | "back-office";
 
 type BOPage =
   | "dashboard"
@@ -67,6 +55,8 @@ type BOPage =
   | "suppliers"
   | "purchase-orders"
   | "stock-adjustments"
+  | "inventory-counts"
+  | "delivery-report"
   | "cash-management"
   | "reports"
   | "settings"
@@ -177,6 +167,16 @@ const PAGE_META: Record<
     subtitle: "Manual inventory corrections",
   },
 
+  "inventory-counts": {
+    title: "Inventory Counts",
+    subtitle: "Physical stock counting and reconciliation",
+  },
+
+  "delivery-report": {
+    title: "Delivery Report",
+    subtitle: "Record and track incoming deliveries",
+  },
+
   "cash-management": {
     title: "Cash Management",
     subtitle: "Till and float management",
@@ -196,20 +196,6 @@ const PAGE_META: Record<
     title: "Add Product",
     subtitle: "Create a new product",
   },
-};
-
-// ============================================================
-// CART
-// ============================================================
-
-type CartItem = {
-  id: number;
-  name: string;
-  sku: string;
-  price: number;
-  qty: number;
-  discount: number;
-  category: string;
 };
 
 // ============================================================
@@ -270,9 +256,6 @@ const [mode, setMode] = useState<AppMode>(() => {
     return "admin-login";
   }
 });
-
-  const [cashier, setCashier] =
-    useState("Admin User");
 
   // ==========================================================
   // STORE MANAGEMENT
@@ -471,55 +454,6 @@ const [mode, setMode] = useState<AppMode>(() => {
     useState<BOPage>("products");
 
   // ==========================================================
-  // POS
-  // ==========================================================
-
-  const [posView, setPOSView] =
-    useState<POSView>("main");
-
-  const [cart, setCart] =
-    useState<CartItem[]>([]);
-
-  const [customer, setCustomer] =
-    useState<string | null>(null);
-
-  const [payMethod, setPayMethod] =
-    useState("cash");
-
-  const [amountPaid, setAmountPaid] =
-    useState(0);
-
-  const [changeGiven, setChangeGiven] =
-    useState(0);
-
-  const [subtotal, setSubtotal] =
-    useState(0);
-
-  const [discount, setDiscount] =
-    useState(0);
-
-  const [tax, setTax] =
-    useState(0);
-
-  const [total, setTotal] =
-    useState(0);
-
-  const [receiptNo] =
-    useState(
-      "RCP-" +
-      new Date()
-        .toISOString()
-        .slice(0, 10)
-        .replace(/-/g, "") +
-      "-" +
-      String(
-        Math.floor(
-          Math.random() * 90 + 10
-        )
-      ).padStart(4, "0")
-    );
-
-  // ==========================================================
   // NAVIGATION
   // ==========================================================
 
@@ -535,64 +469,6 @@ const [mode, setMode] = useState<AppMode>(() => {
   };
 
   // ==========================================================
-  // POS PAYMENT
-  // ==========================================================
-
-  const handlePOSPay = (
-    cartItems: CartItem[],
-    cust: string | null,
-    sub: number,
-    disc: number,
-    tx: number,
-    tot: number
-  ) => {
-
-    setCart(cartItems);
-    setCustomer(cust);
-    setSubtotal(sub);
-    setDiscount(disc);
-    setTax(tx);
-    setTotal(tot);
-
-    setPOSView("payment");
-  };
-
-  // ==========================================================
-  // PAYMENT COMPLETE
-  // ==========================================================
-
-  const handlePayComplete = (
-    method: string,
-    paid: number,
-    chg: number
-  ) => {
-
-    setPayMethod(method);
-    setAmountPaid(paid);
-    setChangeGiven(chg);
-
-    setPOSView("success");
-  };
-
-  // ==========================================================
-  // NEW SALE
-  // ==========================================================
-
-  const handleNewSale = () => {
-
-    setCart([]);
-    setCustomer(null);
-    setSubtotal(0);
-    setDiscount(0);
-    setTax(0);
-    setTotal(0);
-    setAmountPaid(0);
-    setChangeGiven(0);
-
-    setPOSView("main");
-  };
-
-  // ==========================================================
   // ADMIN LOGIN
   // ==========================================================
 
@@ -602,141 +478,6 @@ const [mode, setMode] = useState<AppMode>(() => {
       <AdminLogin
         onLogin={() =>
           setMode("back-office")
-        }
-
-        onSwitchToPOS={() =>
-          setMode("pos-login")
-        }
-      />
-    );
-  }
-
-  // ==========================================================
-  // POS LOGIN
-  // ==========================================================
-
-  if (mode === "pos-login") {
-
-    return (
-      <POSLogin
-        onLogin={(name) => {
-
-          setCashier(name);
-
-          setMode("pos");
-
-          setPOSView("main");
-        }}
-
-        onSwitchToAdmin={() =>
-          setMode("admin-login")
-        }
-      />
-    );
-  }
-
-  // ==========================================================
-  // POS
-  // ==========================================================
-
-  if (mode === "pos") {
-
-    // LOCK SCREEN
-
-    if (posView === "locked") {
-
-      return (
-        <POSLockScreen
-          cashier={cashier}
-          onUnlock={() =>
-            setPOSView("main")
-          }
-        />
-      );
-    }
-
-    // PAYMENT
-
-    if (posView === "payment") {
-
-      return (
-        <POSPayment
-          total={total}
-          subtotal={subtotal}
-          discount={discount}
-          tax={tax}
-          customer={customer}
-
-          onComplete={(
-            method,
-            paid,
-            chg
-          ) =>
-            handlePayComplete(
-              method,
-              paid,
-              chg
-            )
-          }
-
-          onBack={() =>
-            setPOSView("main")
-          }
-
-          onCancel={() =>
-            setPOSView("main")
-          }
-        />
-      );
-    }
-
-    // SUCCESS
-
-    if (posView === "success") {
-
-      return (
-        <POSSuccess
-          receiptNo={receiptNo}
-          total={total}
-          method={payMethod}
-          amountPaid={amountPaid}
-          change={changeGiven}
-          customer={customer}
-          cashier={cashier}
-
-          cartItems={cart.map(
-            (item) => ({
-              name: item.name,
-              qty: item.qty,
-              price: item.price,
-            })
-          )}
-
-          subtotal={subtotal}
-          discount={discount}
-          tax={tax}
-
-          onNewSale={
-            handleNewSale
-          }
-        />
-      );
-    }
-
-    // MAIN POS
-
-    return (
-      <POSMain
-        cashier={cashier}
-
-        onPay={handlePOSPay}
-
-        onLock={() =>
-          setPOSView("locked")
-        }
-
-        onLogout={() =>
-          setMode("pos-login")
         }
       />
     );
@@ -884,6 +625,16 @@ case "add-product":
       }
     />
   );
+
+      case "inventory-counts":
+        return (
+          <InventoryCount
+            activeStoreId={selectedStore?.id ?? null}
+          />
+        );
+
+      case "delivery-report":
+        return <DeliveryReport />;
 
       case "cash-management":
         return (

@@ -20,7 +20,8 @@ type Page =
   | "reports"
   | "settings"
   | "add-product"
-  | "store-transfers";
+  | "store-transfers"
+  | "delivery-report";
 
 interface SidebarProps {
   currentPage: Page;
@@ -76,6 +77,7 @@ const navGroups = [
       { id: "inventory", label: "Inventory", icon: WarehouseIcon },
       { id: "stock-adjustments", label: "Stock Adjustments", icon: AdjustIcon },
       { id: "store-transfers", label: "Store Transfers", icon: TransferIcon },
+      { id: "delivery-report", label: "Delivery Report", icon: ClipboardIcon },
     ],
   },
   {
@@ -178,7 +180,7 @@ export default function Sidebar({
 
       try {
         const response = await fetch(
-          `${API_BASE}/settings/general/get.php?user_id=${encodeURIComponent(String(userId))}`,
+          `${API_BASE}/general/get.php?user_id=${encodeURIComponent(String(userId))}`,
           { credentials: "include" }
         );
 
@@ -188,7 +190,7 @@ export default function Sidebar({
 
         const data = await response.json();
         if (!cancelled) {
-          setGeneralSettings(data?.settings ?? null);
+          setGeneralSettings(data?.data ?? data ?? null);
         }
       } catch (error) {
         console.error("Unable to load general settings:", error);
@@ -207,30 +209,11 @@ export default function Sidebar({
   // DISPLAY VALUES
   // ============================================================
 
-  const getGeneralLogoUrl = (logoPath: string | null | undefined) => {
-    const value = String(logoPath || "").trim();
-
-    if (!value) {
-      return DEFAULT_LOGO;
-    }
-
-    if (/^https?:\/\//i.test(value)) {
-      return value;
-    }
-
-    if (value.startsWith("data:")) {
-      return value;
-    }
-
-    return `${API_BASE}/${value.replace(/^\/+/, "")}`;
-  };
-
   const businessName =
     generalSettings?.business_name?.trim() || DEFAULT_BUSINESS_NAME;
 
-  const businessLogo = getGeneralLogoUrl(
-    generalSettings?.logo
-  );
+  const businessLogo =
+    generalSettings?.logo?.trim() || DEFAULT_LOGO;
 
   const adminName =
     admin?.full_name ||

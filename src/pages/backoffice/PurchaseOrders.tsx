@@ -3231,7 +3231,7 @@ ${text.substring(
           <div className="flex flex-wrap items-center gap-3">
             <div className="flex items-center gap-2">
               <label className="text-[11px] font-medium text-[#64748B] whitespace-nowrap">
-                Store / Branch
+               Branch
               </label>
               <select
                 value={selectedStoreId ?? ""}
@@ -3257,12 +3257,12 @@ ${text.substring(
                 className="h-9 px-3 text-[12px] rounded-lg border border-[#E2E8F0] bg-white focus:outline-none focus:border-[#4F46E5]"
               >
                 <option value="" disabled>
-                  {loadingStores ? "Loading stores..." : "Select Store / Branch"}
+                  {loadingStores ? "Loading stores..." : "Select Branch"}
                 </option>
                 {stores.map((store) => (
                   <option key={store.id} value={store.id}>
-                    {store.store_name}
-                    {store.branch_name ? ` — ${store.branch_name}` : ""}
+                  
+                    {store.branch_name ? `  ${store.branch_name}` : ""}
                   </option>
                 ))}
               </select>
@@ -4678,7 +4678,7 @@ ${text.substring(
 
             <div>
               <label className="text-[12px] font-medium text-[#374151] block mb-1">
-                Store / Branch <span className="text-red-500">*</span>
+                 Branch <span className="text-red-500">*</span>
               </label>
 
               <select
@@ -4708,14 +4708,14 @@ ${text.substring(
                     ? "Loading stores..."
                     : stores.length === 0
                     ? "No stores available"
-                    : "Select Store / Branch"}
+                    : "Select Branch"}
                 </option>
 
                 {stores.map((store) => (
                   <option key={store.id} value={store.id}>
-                    {store.store_name}
+                   
                     {store.branch_name
-                      ? ` — ${store.branch_name}`
+                      ? `  ${store.branch_name}`
                       : ""}
                   </option>
                 ))}
