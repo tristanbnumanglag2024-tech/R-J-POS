@@ -16,6 +16,7 @@ type Page =
   | "suppliers"
   | "purchase-orders"
   | "stock-adjustments"
+  | "inventory-counts"
   | "cash-management"
   | "reports"
   | "settings"
@@ -76,6 +77,7 @@ const navGroups = [
       { id: "categories", label: "Categories", icon: TagIcon },
       { id: "inventory", label: "Inventory", icon: WarehouseIcon },
       { id: "stock-adjustments", label: "Stock Adjustments", icon: AdjustIcon },
+      { id: "inventory-counts", label: "Inventory Counts", icon: AdjustIcon },
       { id: "store-transfers", label: "Store Transfers", icon: TransferIcon },
       { id: "delivery-report", label: "Delivery Report", icon: ClipboardIcon },
     ],
