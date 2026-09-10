@@ -265,6 +265,11 @@ export default function Products({
   const [editMode, setEditMode] =
     useState<"store" | "all">("store");
 
+  // All Stores: checked stores have an active product_stores association.
+  // Unchecked stores remain associated but are marked inactive.
+  const [selectedEditStoreIds, setSelectedEditStoreIds] =
+    useState<number[]>([]);
+
   const [savingEdit, setSavingEdit] =
     useState(false);
 
@@ -1215,6 +1220,7 @@ export default function Products({
     setViewProduct(null);
     setEditProduct(null);
     setEditMode("store");
+    setSelectedEditStoreIds([]);
     setError("");
     setSuccess("");
 
@@ -1727,6 +1733,24 @@ export default function Products({
       variants: product.variants ?? [],
     });
 
+    // Load the global supplier list and initialize the store checkboxes
+    // from the actual product_stores associations already returned by the
+    // All Stores product load.
+    const activeStoreRows = allStores.filter(
+      (store) => String(store.status ?? "active").toLowerCase() === "active"
+    );
+    const activeAssociationStoreIds = activeStoreRows
+      .filter((store) => {
+        const association = allStoreProducts.find(
+          (row) =>
+            Number(row.id) === Number(product.id) &&
+            Number(row.store_id) === Number(store.id)
+        );
+        return association?.status === "active";
+      })
+      .map((store) => Number(store.id));
+
+    setSelectedEditStoreIds(activeAssociationStoreIds);
     await fetchSuppliers();
   };
 
@@ -1821,8 +1845,46 @@ export default function Products({
         );
       }
 
+      // Synchronize the product's store availability separately from the
+      // centralized product master fields. Checked = active association;
+      // unchecked = inactive association. A checked store without an
+      // existing association is created automatically.
+      const associationResponse = await fetch(
+        `${API_BASE}/products/update-store-associations.php`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Accept: "application/json",
+          },
+          body: JSON.stringify({
+            product_id: productId,
+            store_ids: selectedEditStoreIds,
+          }),
+        }
+      );
+
+      const associationText = await associationResponse.text();
+      let associationData: any;
+      try {
+        associationData = JSON.parse(associationText);
+      } catch {
+        throw new Error(
+          `Store association API did not return valid JSON:\n${associationText.substring(0, 500)}`
+        );
+      }
+
+      if (!associationResponse.ok || !associationData.success) {
+        throw new Error(
+          associationData.message ||
+            "Product details were saved, but store availability could not be updated."
+        );
+      }
+
       setSuccess(
-        data.message || "Product updated across all stores successfully."
+        associationData.message ||
+          data.message ||
+          "Product updated across all stores successfully."
       );
       setEditProduct(null);
       await refreshProducts();
@@ -3117,6 +3179,96 @@ export default function Products({
                       label: category.name,
                     }))}
                   />
+
+                  <div className="rounded-xl border border-[#E2E8F0] overflow-hidden">
+                    <div className="px-3 py-3 bg-[#F8FAFC] border-b border-[#E2E8F0]">
+                      <div className="flex items-center justify-between gap-3">
+                        <div>
+                          <p className="text-[12px] font-semibold text-[#374151]">
+                            Store Availability
+                          </p>
+                          <p className="text-[10px] text-[#94A3B8] mt-0.5">
+                            Check a store to make this product active there. Uncheck it to make the product inactive in that store.
+                          </p>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const activeIds = allStores
+                              .filter(
+                                (store) =>
+                                  String(store.status ?? "active").toLowerCase() === "active"
+                              )
+                              .map((store) => Number(store.id));
+                            setSelectedEditStoreIds(activeIds);
+                          }}
+                          className="text-[10px] font-semibold text-[#4F46E5] hover:underline shrink-0"
+                        >
+                          Select All
+                        </button>
+                      </div>
+                    </div>
+
+                    <div className="divide-y divide-[#E2E8F0] max-h-[220px] overflow-y-auto">
+                      {allStores
+                        .filter(
+                          (store) =>
+                            String(store.status ?? "active").toLowerCase() === "active"
+                        )
+                        .map((store) => {
+                          const storeId = Number(store.id);
+                          const checked = selectedEditStoreIds.includes(storeId);
+                          const association = allStoreProducts.find(
+                            (row) =>
+                              Number(row.id) === Number(editProduct.id) &&
+                              Number(row.store_id) === storeId
+                          );
+                          const hasAssociation = Boolean(association);
+
+                          return (
+                            <label
+                              key={storeId}
+                              className="flex items-center justify-between gap-3 px-3 py-2.5 cursor-pointer hover:bg-[#F8FAFC]"
+                            >
+                              <div className="flex items-center gap-3 min-w-0">
+                                <input
+                                  type="checkbox"
+                                  checked={checked}
+                                  onChange={(event) => {
+                                    setSelectedEditStoreIds((current) =>
+                                      event.target.checked
+                                        ? Array.from(new Set([...current, storeId]))
+                                        : current.filter((id) => id !== storeId)
+                                    );
+                                  }}
+                                  className="h-4 w-4 rounded border-[#CBD5E1] text-[#4F46E5] focus:ring-[#4F46E5]"
+                                />
+                                <span className="text-[12px] font-medium text-[#374151] truncate">
+                                  {store.branch_name?.trim() || store.store_name || `Store #${storeId}`}
+                                </span>
+                              </div>
+                              <span
+                                className={`text-[10px] shrink-0 ${
+                                  checked
+                                    ? "text-emerald-600"
+                                    : hasAssociation
+                                    ? "text-amber-600"
+                                    : "text-[#94A3B8]"
+                                }`}
+                              >
+                                {checked
+                                  ? hasAssociation
+                                    ? "Active"
+                                    : "Will be created"
+                                  : hasAssociation
+                                  ? "Will be inactive"
+                                  : "Not added"}
+                              </span>
+                            </label>
+                          );
+                        })}
+                    </div>
+                  </div>
                 </>
               ) : (
                 <>
