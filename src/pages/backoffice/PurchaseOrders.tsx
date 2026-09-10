@@ -4920,7 +4920,7 @@ ${text.substring(
 
               </div>
 
-              <div className="p-4 space-y-3">
+              <div className="p-4 space-y-3 overflow-x-auto">
 
                 {form.items.map(
                   (
@@ -4952,12 +4952,12 @@ ${text.substring(
                         key={
                           index
                         }
-                        className="grid grid-cols-1 md:grid-cols-[minmax(0,1fr)_100px_130px_120px_32px] gap-2 items-end"
+                        className="grid grid-cols-1 md:grid-cols-[minmax(190px,1fr)_75px_105px_95px_120px_32px] gap-2 items-end min-w-0"
                       >
 
                         {/* PRODUCT */}
 
-                        <div>
+                        <div className="min-w-0">
 
                           <label className="text-[11px] font-medium text-[#64748B] block mb-1">
                             Product
@@ -4989,7 +4989,7 @@ ${text.substring(
                               loadingProducts ||
                               !form.supplier_id
                             }
-                            className="w-full h-9 px-2 text-[12px] rounded-lg border border-[#E2E8F0] bg-white focus:outline-none focus:border-[#4F46E5]"
+                            className="w-full min-w-0 h-9 px-2 text-[12px] rounded-lg border border-[#E2E8F0] bg-white focus:outline-none focus:border-[#4F46E5]"
                           >
                             <option value="">
                               {!form.supplier_id
@@ -5047,7 +5047,7 @@ ${text.substring(
                         </div>
   {/* Stock  */}
 
-                        <div>
+                        <div className="min-w-0">
 
                           <label className="text-[11px] font-medium text-[#64748B] block mb-1">
                             Current Stock
@@ -5063,7 +5063,7 @@ ${text.substring(
                                   ).toLocaleString()
                                 : ""
                             }
-                            className="w-full h-9 px-2 text-[12px] rounded-lg "
+                            className="w-full min-w-0 h-9 px-2 text-[12px] rounded-lg bg-[#F8FAFC] border border-[#E2E8F0] "
                           />
 
                         </div>
@@ -5071,7 +5071,7 @@ ${text.substring(
 
                         {/* UNIT COST */}
 
-                        <div>
+                        <div className="min-w-0">
 
                           <label className="text-[11px] font-medium text-[#64748B] block mb-1">
                             Unit Cost
@@ -5105,7 +5105,7 @@ ${text.substring(
 
                          {/* QUANTITY */}
 
-                        <div>
+                        <div className="min-w-0">
 
                           <label className="text-[11px] font-medium text-[#64748B] block mb-1">
                             Quantity
@@ -5138,16 +5138,19 @@ ${text.substring(
 
                         {/* TOTAL */}
 
-                        <div>
+                        <div className="min-w-0">
 
                           <label className="text-[11px] font-medium text-[#64748B] block mb-1">
                             Total
                           </label>
 
-                          <div className="h-9 flex items-center justify-end px-2 rounded-lg bg-[#F8FAFC] text-[12px] font-semibold text-[#0F172A]">
-                            {fmt(
-                              lineTotal
-                            )}
+                          <div
+                            className="w-full min-w-0 h-9 flex items-center justify-end px-2 rounded-lg bg-[#F8FAFC] text-[12px] font-semibold text-[#0F172A] overflow-hidden"
+                            title={fmt(lineTotal)}
+                          >
+                            <span className="block min-w-0 max-w-full truncate whitespace-nowrap text-right">
+                              {fmt(lineTotal)}
+                            </span>
                           </div>
 
                         </div>
@@ -5207,10 +5210,21 @@ ${text.substring(
                     Purchase Order Total
                   </span>
 
-                  <span className="text-[17px] font-bold text-[#4F46E5]">
-                    {fmt(
-                      formTotal
-                    )}
+                  <span
+
+
+                    className="min-w-0 max-w-[65%] truncate whitespace-nowrap text-right text-[17px] font-bold text-[#4F46E5]"
+
+
+                    title={fmt(formTotal)}
+
+
+                  >
+
+
+                    {fmt(formTotal)}
+
+
                   </span>
 
                 </div>

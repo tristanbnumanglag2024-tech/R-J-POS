@@ -1,3 +1,4 @@
+
 import { useEffect, useMemo, useState } from "react";
 import { createPortal } from "react-dom";
 import {
@@ -89,7 +90,7 @@ const PER_PAGE = 8;
 function fmt(value: number | string | null | undefined) {
   const numberValue = Number(value ?? 0);
 
-  return "$" + numberValue.toLocaleString("en-US", {
+  return "₱" + numberValue.toLocaleString("en-US", {
     minimumFractionDigits: 2,
     maximumFractionDigits: 2,
   });

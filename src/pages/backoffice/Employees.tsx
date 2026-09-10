@@ -68,20 +68,16 @@ type EmployeeForm = {
 
 const ROLES = [
   {
-    value: "store-manager",
-    label: "Store Manager",
+    value: "admin",
+    label: "Admin",
   },
   {
-    value: "senior-cashier",
-    label: "Senior Cashier",
+    value: "manager",
+    label: "Manager",
   },
   {
     value: "cashier",
     label: "Cashier",
-  },
-  {
-    value: "inventory-clerk",
-    label: "Inventory Clerk",
   },
 ];
 
@@ -90,39 +86,9 @@ const ROLES = [
 // ============================================================
 
 const ROLE_PERMISSIONS: Record<string, string[]> = {
-  "store-manager": [
-    "Dashboard",
-    "Sales",
-    "Products",
-    "Inventory",
-    "Employees",
-    "Reports",
-    "Settings",
-    "Discounts",
-    "Refunds",
-    "Cash Management",
-  ],
-
-  "senior-cashier": [
-    "POS",
-    "Sales",
-    "Receipts",
-    "Customers",
-    "Cash Management",
-    "Refunds",
-  ],
-
-  cashier: [
-    "POS",
-    "Receipts",
-    "Customers",
-  ],
-
-  "inventory-clerk": [
-    "Products",
-    "Inventory",
-    "Purchase Orders",
-  ],
+  admin: ["All Access"],
+  manager: ["All Access"],
+  cashier: ["POS"],
 };
 
 // ============================================================
@@ -136,19 +102,11 @@ function fmt(n: number) {
 }
 
 function getRoleLabel(role: string) {
-  const found = ROLES.find((r) => r.value === role);
+  const normalized = normalizeRole(role);
 
-  if (found) {
-    return found.label;
-  }
-
-  // Handle existing database values
-  const normalized = role.toLowerCase();
-
-  if (normalized === "store manager") return "Store Manager";
-  if (normalized === "senior cashier") return "Senior Cashier";
+  if (normalized === "admin") return "Admin";
+  if (normalized === "manager") return "Manager";
   if (normalized === "cashier") return "Cashier";
-  if (normalized === "inventory clerk") return "Inventory Clerk";
 
   return role;
 }
@@ -156,12 +114,26 @@ function getRoleLabel(role: string) {
 function normalizeRole(role: string) {
   const normalized = role.toLowerCase().trim();
 
-  if (normalized === "store manager") return "store-manager";
-  if (normalized === "senior cashier") return "senior-cashier";
-  if (normalized === "cashier") return "cashier";
-  if (normalized === "inventory clerk") return "inventory-clerk";
+  if (normalized === "administrator") return "admin";
+  if (normalized === "admin") return "admin";
 
-  return role;
+  if (
+    normalized === "manager" ||
+    normalized === "store manager" ||
+    normalized === "store-manager"
+  ) {
+    return "manager";
+  }
+
+  if (
+    normalized === "cashier" ||
+    normalized === "senior cashier" ||
+    normalized === "senior-cashier"
+  ) {
+    return "cashier";
+  }
+
+  return normalized;
 }
 
 function formatDate(date: string | null | undefined) {
@@ -327,16 +299,18 @@ useEffect(() => {
         throw new Error(data.message || "Failed to load employees.");
       }
 
-      const loadedEmployees: Employee[] = (data.employees || []).map(
-        (employee: Employee) => ({
+      // Show every employee role (Admin, Manager, Cashier),
+      // but never expose the master account (user ID 1).
+      const loadedEmployees: Employee[] = (data.employees || [])
+        .filter((employee: Employee) => Number(employee.id) !== 1)
+        .map((employee: Employee) => ({
           ...employee,
           role: normalizeRole(employee.role),
           stores: employee.stores || [],
           store_ids:
             employee.store_ids ||
             (employee.stores || []).map((store) => store.id),
-        })
-      );
+        }));
 
       setEmployees(loadedEmployees);
     } catch (err) {
@@ -376,11 +350,48 @@ useEffect(() => {
   };
 
   // ----------------------------------------------------------
+  // STORE ACCESS BY ROLE
+  // ----------------------------------------------------------
+
+  useEffect(() => {
+    const normalizedRole = normalizeRole(form.role);
+
+    if (
+      (normalizedRole === "admin" || normalizedRole === "manager") &&
+      stores.length > 0
+    ) {
+      const allStoreIds = stores.map((store) => store.id);
+
+      setForm((current) => {
+        const same =
+          current.storeIds.length === allStoreIds.length &&
+          allStoreIds.every((id) => current.storeIds.includes(id));
+
+        return same
+          ? current
+          : {
+              ...current,
+              storeIds: allStoreIds,
+            };
+      });
+    }
+  }, [form.role, stores]);
+
+  // ----------------------------------------------------------
   // STORE SELECTION
   // ----------------------------------------------------------
 
   const toggleStore = (storeId: number) => {
     setForm((current) => {
+      // Admin and Manager have access to every store.
+      const normalizedRole = normalizeRole(current.role);
+      if (normalizedRole === "admin" || normalizedRole === "manager") {
+        return {
+          ...current,
+          storeIds: stores.map((store) => store.id),
+        };
+      }
+
       const exists = current.storeIds.includes(storeId);
 
       return {
@@ -722,10 +733,9 @@ if (form.pin !== form.confirmPin) {
   // ----------------------------------------------------------
 
   const roleColors: Record<string, string> = {
-    "Store Manager": "primary",
-    "Senior Cashier": "info",
+    Admin: "primary",
+    Manager: "primary",
     Cashier: "neutral",
-    "Inventory Clerk": "warning",
   };
 
   // ----------------------------------------------------------
@@ -746,8 +756,8 @@ if (form.pin !== form.confirmPin) {
       }).length,
 
       managers: employees.filter((e) => {
-        const role = getRoleLabel(e.role);
-        return role.includes("Manager");
+        const role = normalizeRole(e.role);
+        return role === "manager" || role === "admin";
       }).length,
     };
   }, [employees]);
@@ -1167,12 +1177,26 @@ if (form.pin !== form.confirmPin) {
             <Select
               label="Role"
               value={form.role}
-              onChange={(value) =>
-                setFormValue("role", value)
-              }
+              onChange={(value) => {
+                const normalizedRole = normalizeRole(value);
+
+                setForm((current) => ({
+                  ...current,
+                  role: normalizedRole,
+                  storeIds:
+                    normalizedRole === "admin" ||
+                    normalizedRole === "manager"
+                      ? stores.map((store) => store.id)
+                      : current.storeIds,
+                }));
+              }}
               placeholder="Select role"
               options={ROLES}
             />
+
+            <p className="text-[10px] text-[#94A3B8] -mt-2">
+              Admin and Manager can access all back-office functions. Cashier can access POS only.
+            </p>
 
             {/* TERMINAL POS PASSWORD */}
             <div className="grid grid-cols-2 gap-3">
@@ -1221,6 +1245,11 @@ if (form.pin !== form.confirmPin) {
               ) : (
                 <div className="border border-[#E2E8F0] rounded-xl p-3 space-y-2 max-h-48 overflow-y-auto">
                   {stores.map((store) => {
+                    const normalizedRole = normalizeRole(form.role);
+                    const allStoresRole =
+                      normalizedRole === "admin" ||
+                      normalizedRole === "manager";
+
                     const checked =
                       form.storeIds.includes(
                         store.id
@@ -1242,11 +1271,12 @@ if (form.pin !== form.confirmPin) {
                                 ? "bg-[#4F46E5] border-[#4F46E5]"
                                 : "border-[#CBD5E1]"
                             }`}
-                            onClick={() =>
-                              toggleStore(
-                                store.id
-                              )
-                            }
+                            onClick={() => {
+                              if (!allStoresRole) {
+                                toggleStore(store.id);
+                              }
+                            }}
+                            aria-disabled={allStoresRole}
                           >
                             {checked && (
                               <svg
@@ -1285,8 +1315,10 @@ if (form.pin !== form.confirmPin) {
               )}
 
               <p className="text-[10px] text-[#94A3B8] mt-1.5">
-                Select all stores where this employee
-                is allowed to work.
+                {normalizeRole(form.role) === "admin" ||
+                normalizeRole(form.role) === "manager"
+                  ? "Admin and Manager automatically have access to all stores."
+                  : "Select the stores where this employee is allowed to work."}
               </p>
             </div>
 
@@ -1454,15 +1486,26 @@ if (form.pin !== form.confirmPin) {
               <Select
                 label="Role"
                 value={form.role}
-                onChange={(value) =>
-                  setFormValue(
-                    "role",
-                    value
-                  )
-                }
+                onChange={(value) => {
+                  const normalizedRole = normalizeRole(value);
+
+                  setForm((current) => ({
+                    ...current,
+                    role: normalizedRole,
+                    storeIds:
+                      normalizedRole === "admin" ||
+                      normalizedRole === "manager"
+                        ? stores.map((store) => store.id)
+                        : current.storeIds,
+                  }));
+                }}
                 options={ROLES}
               />
             </div>
+
+            <p className="text-[10px] text-[#94A3B8] mt-1">
+              Admin and Manager can access all back-office functions. Cashier can access POS only.
+            </p>
 
             {/* TERMINAL POS PASSWORD */}
             <div className="mt-4 grid grid-cols-2 gap-3">
@@ -1499,7 +1542,13 @@ if (form.pin !== form.confirmPin) {
 
               <div className="border border-[#E2E8F0] rounded-xl p-3 space-y-2 max-h-52 overflow-y-auto">
                 {stores.map((store) => {
+                  const normalizedRole = normalizeRole(form.role);
+                  const allStoresRole =
+                    normalizedRole === "admin" ||
+                    normalizedRole === "manager";
+
                   const checked =
+                    allStoresRole ||
                     form.storeIds.includes(
                       store.id
                     );
@@ -1568,8 +1617,10 @@ if (form.pin !== form.confirmPin) {
               </div>
 
               <p className="text-[10px] text-[#94A3B8] mt-1.5">
-                This employee will only be able
-                to access the selected stores.
+                {normalizeRole(form.role) === "admin" ||
+                normalizeRole(form.role) === "manager"
+                  ? "Admin and Manager automatically have access to all stores."
+                  : "This employee will only be able to access the selected stores."}
               </p>
             </div>
 

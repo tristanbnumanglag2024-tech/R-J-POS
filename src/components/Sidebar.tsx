@@ -79,7 +79,7 @@ const navGroups = [
       { id: "stock-adjustments", label: "Stock Adjustments", icon: AdjustIcon },
       { id: "inventory-counts", label: "Inventory Counts", icon: AdjustIcon },
       { id: "store-transfers", label: "Store Transfers", icon: TransferIcon },
-      { id: "delivery-report", label: "Delivery Report", icon: ClipboardIcon },
+      { id: "delivery-report", label: "Delivery Receipts", icon: ClipboardIcon },
     ],
   },
   {

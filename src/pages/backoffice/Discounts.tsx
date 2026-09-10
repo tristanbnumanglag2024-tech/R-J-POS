@@ -124,6 +124,11 @@ export default function Discounts({
   const [selectedStoreId, setSelectedStoreId] =
     useState<number | null>(activeStoreId ?? null);
 
+  // Store selected specifically for the Add Discount form.
+  // Defaults to the currently selected branch but can be changed before saving.
+  const [formStoreId, setFormStoreId] =
+    useState<number | null>(activeStoreId ?? null);
+
   const [storesLoading, setStoresLoading] =
     useState(true);
 
@@ -264,15 +269,19 @@ export default function Discounts({
         )
       ) {
         setSelectedStoreId(Number(activeStoreId));
+        setFormStoreId(Number(activeStoreId));
       } else if (normalized.length > 0) {
         setSelectedStoreId(normalized[0].id);
+        setFormStoreId(normalized[0].id);
       } else {
         setSelectedStoreId(null);
+        setFormStoreId(null);
       }
     } catch (err) {
       console.error("Discount stores load error:", err);
       setStores([]);
       setSelectedStoreId(null);
+      setFormStoreId(null);
       setError(
         err instanceof Error
           ? err.message
@@ -608,6 +617,7 @@ export default function Discounts({
   const openAdd = () => {
 
     resetForm();
+    setFormStoreId(selectedStoreId);
 
     setError("");
     setSuccess("");
@@ -714,10 +724,16 @@ export default function Discounts({
   const handleSave =
     async () => {
 
-      if (!selectedStoreId) {
+      const targetStoreId = editDiscount
+        ? selectedStoreId
+        : formStoreId;
+
+      if (!targetStoreId) {
 
         setError(
-          "Please select a store first."
+          editDiscount
+            ? "Please select a store first."
+            : "Please select a store for this discount."
         );
 
         return;
@@ -836,7 +852,7 @@ export default function Discounts({
 
           store_id:
             Number(
-              selectedStoreId
+              targetStoreId
             ),
 
           name:
@@ -964,6 +980,10 @@ export default function Discounts({
         |--------------------------------------------------------------------------
         */
 
+        if (!editDiscount && targetStoreId !== selectedStoreId) {
+          setSelectedStoreId(targetStoreId);
+        }
+
         setShowAdd(false);
 
         resetForm();
@@ -983,7 +1003,12 @@ export default function Discounts({
         |--------------------------------------------------------------------------
         */
 
-        await loadDiscounts();
+        if (targetStoreId === selectedStoreId) {
+          await loadDiscounts();
+        }
+        // If a different store was selected for a new discount, changing
+        // selectedStoreId above triggers the existing store-change effect.
+
 
       } catch (err) {
 
@@ -1594,7 +1619,7 @@ export default function Discounts({
                         discount.type ===
                         "percentage"
                           ? "%"
-                          : "$"
+                          : "₱"
                       }
 
                       {" "}
@@ -1620,7 +1645,7 @@ export default function Discounts({
                         discount.type ===
                         "percentage"
                           ? `${discount.value}%`
-                          : `$${discount.value.toFixed(
+                          : `₱${discount.value.toFixed(
                               2
                             )}`
                       }
@@ -1652,7 +1677,7 @@ export default function Discounts({
                       {
                         discount.minOrder >
                         0
-                          ? `$${discount.minOrder.toFixed(
+                          ? `₱${discount.minOrder.toFixed(
                               2
                             )}`
                           : "—"
@@ -1814,6 +1839,37 @@ export default function Discounts({
 
           <div className="space-y-4">
 
+            {!editDiscount && (
+              <Select
+                label="Store / Branch"
+                value={
+                  formStoreId
+                    ? String(formStoreId)
+                    : ""
+                }
+                onChange={(value) => {
+                  const id = Number(value);
+                  setFormStoreId(
+                    Number.isInteger(id) && id > 0
+                      ? id
+                      : null
+                  );
+                  setError("");
+                }}
+                placeholder={
+                  storesLoading
+                    ? "Loading stores..."
+                    : stores.length > 0
+                    ? "Select store / branch"
+                    : "No stores available"
+                }
+                options={stores.map((store) => ({
+                  value: String(store.id),
+                  label: store.branch_name,
+                }))}
+              />
+            )}
+
             {/* NAME */}
 
             <Input
@@ -1865,7 +1921,7 @@ export default function Discounts({
                     value:
                       "fixed",
                     label:
-                      "Fixed Amount ($)",
+                      "Fixed Amount (₱)",
                   },
                 ]}
               />
@@ -1875,7 +1931,7 @@ export default function Discounts({
                   form.type ===
                   "percentage"
                     ? "Percentage (%)"
-                    : "Amount ($)"
+                    : "Amount (₱)"
                 }
                 value={
                   String(
@@ -1933,7 +1989,7 @@ export default function Discounts({
               />
 
               <Input
-                label="Min Order ($)"
+                label="Min Order (₱)"
                 value={
                   String(
                     form.minOrder

@@ -80,7 +80,7 @@ function SalesCard({ children, className = "" }: SalesCardProps) {
 
 
 function fmt(value: number) {
-  return "$" + Number(value || 0).toLocaleString("en-US", {
+  return "₱" + Number(value || 0).toLocaleString("en-US", {
     minimumFractionDigits: 2,
     maximumFractionDigits: 2,
   });
