@@ -2428,7 +2428,7 @@ export default function Products({
         ) : (
           <>
             <div
-              className="w-full overflow-x-auto [&_table]:w-full [&_table]:min-w-[1280px] [&_table]:table-fixed"
+              className="mx-4 w-[calc(100%-2rem)] overflow-x-auto [&_table]:w-full [&_table]:min-w-[1280px] [&_table]:table-fixed"
             >
               <Table
                 headers={
