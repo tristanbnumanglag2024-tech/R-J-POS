@@ -251,7 +251,7 @@ const [mode, setMode] = useState<AppMode>("admin-login");
 
     const checkSession = async () => {
       try {
-        const response = await fetch(`${API_BASE}/session.php`, {
+        const response = await fetch(`${API_BASE}/admin/session.php`, {
           method: "GET",
           credentials: "include",
           headers: {
