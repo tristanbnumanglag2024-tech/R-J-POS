@@ -238,24 +238,61 @@ export default function App() {
   // APP MODE
   // ==========================================================
 
-const [mode, setMode] = useState<AppMode>(() => {
-  try {
-    const savedAdmin = localStorage.getItem("admin");
+const [mode, setMode] = useState<AppMode>("admin-login");
+  const [checkingSession, setCheckingSession] = useState(true);
 
-    if (savedAdmin) {
-      return "back-office";
-    }
+  // ==========================================================
+  // VERIFY PHP SESSION
+  // ==========================================================
+  // The PHP session is the source of truth. localStorage only
+  // stores the user information for UI/configuration purposes.
+  useEffect(() => {
+    let mounted = true;
 
-    return "admin-login";
-  } catch (error) {
-    console.error(
-      "Unable to restore admin session:",
-      error
-    );
+    const checkSession = async () => {
+      try {
+        const response = await fetch(`${API_BASE}/session.php`, {
+          method: "GET",
+          credentials: "include",
+          headers: {
+            Accept: "application/json",
+          },
+        });
 
-    return "admin-login";
-  }
-});
+        const data = await response.json();
+
+        if (!mounted) return;
+
+        if (response.ok && data?.authenticated === true) {
+          if (data.user) {
+            localStorage.setItem("admin", JSON.stringify(data.user));
+          }
+
+          setMode("back-office");
+        } else {
+          localStorage.removeItem("admin");
+          setMode("admin-login");
+        }
+      } catch (error) {
+        console.error("Unable to verify PHP session:", error);
+
+        if (!mounted) return;
+
+        localStorage.removeItem("admin");
+        setMode("admin-login");
+      } finally {
+        if (mounted) {
+          setCheckingSession(false);
+        }
+      }
+    };
+
+    checkSession();
+
+    return () => {
+      mounted = false;
+    };
+  }, []);
 
   // ==========================================================
   // STORE MANAGEMENT
@@ -472,6 +509,16 @@ const [mode, setMode] = useState<AppMode>(() => {
   // ADMIN LOGIN
   // ==========================================================
 
+  if (checkingSession) {
+    return (
+      <div className="flex min-h-screen items-center justify-center bg-[#F8FAFC]">
+        <div className="text-sm text-slate-500">
+          Checking session...
+        </div>
+      </div>
+    );
+  }
+
   if (mode === "admin-login") {
 
     return (
@@ -675,16 +722,26 @@ case "add-product":
      <Sidebar
   currentPage={boPage}
   onNavigate={navigateBO}
-  onLogout={() => {
+  onLogout={async () => {
   const confirmed = window.confirm(
     "Are you sure you want to logout?"
   );
 
   if (!confirmed) return;
 
+  try {
+    await fetch(`${API_BASE}/logout.php`, {
+      method: "POST",
+      credentials: "include",
+      headers: {
+        Accept: "application/json",
+      },
+    });
+  } catch (error) {
+    console.error("Logout error:", error);
+  }
+
   localStorage.removeItem("admin");
-
-
   setMode("admin-login");
 }}
 />

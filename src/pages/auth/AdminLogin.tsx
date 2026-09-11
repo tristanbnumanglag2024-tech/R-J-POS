@@ -1,5 +1,5 @@
 import { useState } from "react";
-
+import { API_BASE } from "../../config/api";
 interface AdminUser {
   id: number | string;
   username?: string | null;
@@ -38,21 +38,21 @@ export default function AdminLogin({ onLogin }: AdminLoginProps) {
     setLoading(true);
 
     try {
-      const response = await fetch(
-        "https://sakuracareapi.site/rhea-pos-api/admin/login.php",
-        {
-          method: "POST",
-          credentials: "include",
-          headers: {
-            "Content-Type": "application/json",
-            Accept: "application/json",
-          },
-          body: JSON.stringify({
-            login,
-            password: passwordValue,
-          }),
-        }
-      );
+     const response = await fetch(
+  `${API_BASE}/admin/login.php`,
+  {
+    method: "POST",
+    credentials: "include",
+    headers: {
+      "Content-Type": "application/json",
+      Accept: "application/json",
+    },
+    body: JSON.stringify({
+      login,
+      password: passwordValue,
+    }),
+  }
+);
 
       const text = await response.text();
 
