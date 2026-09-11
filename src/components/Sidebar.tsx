@@ -1,6 +1,6 @@
 import React from "react";
 import logo from "/logo2.png";
-
+import { API_BASE } from "../config/api";
 type Page =
   | "dashboard"
   | "sales"
@@ -51,7 +51,7 @@ interface GeneralSettings {
   logo?: string | null;
 }
 
-const API_BASE = "https://sakuracareapi.site/rhea-pos-api/settings";
+
 const DEFAULT_BUSINESS_NAME = "R&J POS";
 const DEFAULT_LOGO = "/logo2.png";
 
