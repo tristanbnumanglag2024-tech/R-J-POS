@@ -2433,8 +2433,8 @@ export default function Products({
               <Table
                 headers={
                   tableScope === "all"
-                    ? ["Product", "SKU", "Cost (Average)", "Stock", "Status", "Actions"]
-                    : [ "Product", "SKU",  "Category", "Price", "Cost (Average)", "Stock", "Status", "Actions"]
+                    ? ["Product", "SKU", "Cost (Average)", "Margin", "Stock", "Status", "Actions"]
+                    : ["Product", "SKU", "Category", "Price", "Cost (Average)", "Margin", "Stock", "Status", "Actions"]
                 }
               >
 
@@ -2484,6 +2484,33 @@ export default function Products({
                     <span className="text-[#64748B]">
                       {fmt(getDisplayAverageCost(product))}
                     </span>
+                  </Td>
+
+                  {/* PROFIT MARGIN */}
+                  <Td>
+                    {(() => {
+                      const sellingPrice = Number(product.price || 0);
+                      const averageCost = Number(getDisplayAverageCost(product) || 0);
+                      const hasCost = averageCost > 0;
+                      const margin =
+                        hasCost && sellingPrice > 0
+                          ? ((sellingPrice - averageCost) / sellingPrice) * 100
+                          : null;
+
+                      return (
+                        <span
+                          className={`font-semibold ${
+                            margin !== null && margin < 0
+                              ? "text-red-500"
+                              : margin === null || margin === 0
+                              ? "text-[#64748B]"
+                              : "text-emerald-600"
+                          }`}
+                        >
+                          {margin === null ? "-" : `${margin.toFixed(2)}%`}
+                        </span>
+                      );
+                    })()}
                   </Td>
 
                   {/* STOCK */}
