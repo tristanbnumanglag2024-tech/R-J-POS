@@ -462,7 +462,7 @@ export default function Settings({}: SettingsProps) {
       setStoreError("");
 
       const response = await fetch(
-        `${API_BASE}/stores/list.php`
+        `${API_BASE}/stores/list2.php`
       );
 
       const data = await response.json();

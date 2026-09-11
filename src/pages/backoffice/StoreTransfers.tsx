@@ -707,21 +707,102 @@ function GenerateReceiptModal({
   const [search, setSearch] = useState("");
   const [notes, setNotes] = useState("");
   const [lines, setLines] = useState<CreateLine[]>([]);
+  const [sourceProducts, setSourceProducts] = useState<Product[]>([]);
+  const [loadingSourceProducts, setLoadingSourceProducts] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
 
-  const sourceProducts = useMemo(() => {
+  /*
+   * IMPORTANT:
+   * Products must come from the SELECTED FROM branch, not only from
+   * the currently active store in the parent component.
+   *
+   * Previously this modal received `products` from loadProducts(), and
+   * loadProducts() only queried activeStoreId. Therefore switching
+   * From Branch to another store left the modal with no products from
+   * that branch.
+   *
+   * Fetch the inventory for the selected FROM branch whenever it changes.
+   */
+  useEffect(() => {
+    let cancelled = false;
+
+    const loadSourceProducts = async () => {
+      const storeId = Number(fromStoreId);
+
+      setSourceProducts([]);
+      setSearch("");
+      setLines([]);
+
+      if (!storeId) return;
+
+      try {
+        setLoadingSourceProducts(true);
+        setError("");
+
+        const d = await fetchJson(
+          `${API_BASE}/inventory/inventory.php?store_id=${encodeURIComponent(
+            String(storeId)
+          )}`
+        );
+
+        if (cancelled) return;
+
+        const raw = Array.isArray(d.items)
+          ? d.items
+          : Array.isArray(d.products)
+            ? d.products
+            : [];
+
+        const mapped: Product[] = raw
+          .map((p: any) => ({
+            id: Number(p.product_id ?? p.id ?? 0),
+            name: p.name || p.product_name || "",
+            sku: p.sku || "",
+            stock: Number(p.stock || 0),
+            store_id: Number(p.store_id ?? storeId),
+          }))
+          .filter(
+            (p: Product) =>
+              p.id > 0 &&
+              p.store_id === storeId &&
+              p.stock > 0
+          );
+
+        setSourceProducts(mapped);
+      } catch (e) {
+        if (!cancelled) {
+          setError(
+            e instanceof Error
+              ? e.message
+              : "Failed to load products for the selected branch."
+          );
+        }
+      } finally {
+        if (!cancelled) {
+          setLoadingSourceProducts(false);
+        }
+      }
+    };
+
+    void loadSourceProducts();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [fromStoreId]);
+
+  const filteredSourceProducts = useMemo(() => {
     const q = search.trim().toLowerCase();
 
-    return products.filter(
+    return sourceProducts.filter(
       (p) =>
-        p.store_id === Number(fromStoreId) &&
         p.stock > 0 &&
         (!q ||
           p.name.toLowerCase().includes(q) ||
           p.sku.toLowerCase().includes(q))
     );
-  }, [products, fromStoreId, search]);
+  }, [sourceProducts, search]);
 
   const add = (p: Product) => {
     if (lines.some((l) => l.id === p.id)) return;
@@ -874,7 +955,6 @@ onClose();
               value={fromStoreId}
               onChange={(e) => {
                 setFromStoreId(e.target.value);
-                setLines([]);
               }}
               disabled={saving}
               className="w-full h-9 px-3 text-[12px] rounded-lg border border-[#E2E8F0] bg-white"
@@ -918,17 +998,34 @@ onClose();
             Add Product
           </label>
 
-          <input
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            placeholder="Search product by name or SKU..."
-            className="w-full h-9 px-3 text-[12px] rounded-lg border border-[#E2E8F0]"
-          />
+          <div className="relative">
+            <input
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder={
+                loadingSourceProducts
+                  ? "Loading products for selected branch..."
+                  : "Search product by name or SKU..."
+              }
+              disabled={loadingSourceProducts || saving}
+              className="w-full h-9 px-3 text-[12px] rounded-lg border border-[#E2E8F0]"
+            />
+          </div>
 
           {search.trim() && (
             <div className="mt-2 max-h-40 overflow-y-auto border rounded-xl">
-              {sourceProducts.length ? (
-                sourceProducts.map((p) => (
+              {loadingSourceProducts ? (
+                <p className="p-4 text-center text-[11px] text-slate-400">
+                  Loading products from {storeLabel(
+                    stores.find((s) => s.id === Number(fromStoreId)) || {
+                      id: Number(fromStoreId),
+                      store_name: "",
+                      branch_name: `Store #${fromStoreId}`,
+                    }
+                  )}...
+                </p>
+              ) : filteredSourceProducts.length ? (
+                filteredSourceProducts.map((p) => (
                   <button
                     key={p.id}
                     type="button"
@@ -953,7 +1050,7 @@ onClose();
                 ))
               ) : (
                 <p className="p-4 text-center text-[11px] text-slate-400">
-                  No available products found.
+                  No available products found in this branch.
                 </p>
               )}
             </div>
@@ -1056,7 +1153,7 @@ onClose();
             onClick={submit}
             disabled={saving}
           >
-            {saving ? "Generating..." : "Generate Receipt"}
+            {saving ? "Generating & Dispatching..." : "Generate Receipt"}
           </Button>
         </div>
       </div>
@@ -1714,7 +1811,7 @@ export default function StoreTransfers({
     }
 
     const d = await fetchJson(
-      `${API_BASE}/store_transfers/store_transfers_list.php?store_id=${activeStoreId}`
+      `${API_BASE}/store_transfers/store_transfers_list.php`
     );
 
     setTransfers(
@@ -1852,8 +1949,6 @@ export default function StoreTransfers({
         (!statusFilter ||
           t.status === statusFilter) &&
         (!storeFilter ||
-          String(t.fromStoreId) ===
-            storeFilter ||
           String(t.toStoreId) ===
             storeFilter)
     );
@@ -1916,7 +2011,7 @@ export default function StoreTransfers({
 
           <p className="text-[12px] text-[#64748B] mt-0.5">
             Delivery receipts between branches with
-            receiving and audit trail.
+            automatic dispatch, receiving and audit trail.
           </p>
         </div>
 
@@ -1991,7 +2086,7 @@ export default function StoreTransfers({
               setSearch(v);
               setPage(1);
             }}
-            placeholder="DR no, store, SKU, product..."
+            placeholder="DR no, from, to, SKU, product..."
           />
 
           <Select
@@ -2025,18 +2120,23 @@ export default function StoreTransfers({
             ]}
           />
 
-          <Select
-            value={storeFilter}
-            onChange={(v) => {
-              setStoreFilter(v);
-              setPage(1);
-            }}
-            placeholder="All Stores"
-            options={stores.map((s) => ({
-              value: String(s.id),
-              label: storeLabel(s),
-            }))}
-          />
+          <div className="flex flex-col gap-1">
+            <span className="text-[9px] font-semibold uppercase tracking-wide text-slate-400">
+              To Branch
+            </span>
+            <Select
+              value={storeFilter}
+              onChange={(v) => {
+                setStoreFilter(v);
+                setPage(1);
+              }}
+              placeholder="All Stores"
+              options={stores.map((s) => ({
+                value: String(s.id),
+                label: storeLabel(s),
+              }))}
+            />
+          </div>
 
           {(search ||
             statusFilter ||
