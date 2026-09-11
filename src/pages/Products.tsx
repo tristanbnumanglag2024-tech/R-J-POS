@@ -2434,7 +2434,7 @@ export default function Products({
                 headers={
                   tableScope === "all"
                     ? ["Product", "SKU", "Cost (Average)", "Stock", "Status", "Actions"]
-                    : ["Branch", "Product", "SKU", "Barcode", "Category", "Price", "Cost (Average)", "Stock", "Status", "Actions"]
+                    : [ "Product", "SKU",  "Category", "Price", "Cost (Average)", "Stock", "Status", "Actions"]
                 }
               >
 
@@ -2447,33 +2447,14 @@ export default function Products({
                       : `${product.store_id}-${product.id}`
                   }
                 >
-                  {tableScope !== "all" && (
-                    <Td>
-                      <span className="text-[#475569]">
-                        {allStores.find((store) => Number(store.id) === Number(product.store_id))?.branch_name ||
-                          `Store #${product.store_id}`}
-                      </span>
-                    </Td>
-                  )}
+                 
 
                   {/* PRODUCT */}
 
                   <Td>
                     <div className="flex items-center gap-3">
 
-                      {product.product_image ? (
-                        <img
-                          src={product.product_image}
-                          alt={product.name}
-                          className="w-9 h-9 rounded-lg object-cover border border-[#E2E8F0]"
-                        />
-                      ) : (
-                        <div className="w-9 h-9 rounded-lg bg-slate-100 text-slate-600 flex items-center justify-center text-[11px] font-bold shrink-0">
-                          {getInitials(
-                            product.name
-                          )}
-                        </div>
-                      )}
+                     
 
                       <div className="min-w-0">
                         <p className="text-[13px] font-medium text-[#0F172A] max-w-[180px] truncate">
@@ -2493,7 +2474,7 @@ export default function Products({
 
                   {tableScope !== "all" && (
                     <>
-                      <Td mono>{product.barcode || "—"}</Td>
+                  
                       <Td><span className="text-[#475569]">{getCategoryName(product, categories)}</span></Td>
                       <Td><span className="font-semibold text-[#0F172A]">{fmt(product.price)}</span></Td>
                     </>
