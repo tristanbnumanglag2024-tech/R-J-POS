@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-
+import { API_BASE } from "./config/api";
 // Auth
 import AdminLogin from "./pages/auth/AdminLogin";
 
@@ -202,7 +202,7 @@ const PAGE_META: Record<
 // API
 // ============================================================
 
-const API_BASE = "https://sakuracareapi.site/rhea-pos-api";
+
 
 // ============================================================
 // AUTHENTICATED ADMIN USER ID

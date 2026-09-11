@@ -55,6 +55,7 @@ export default function AdminLogin({ onLogin }: AdminLoginProps) {
       );
 
       const text = await response.text();
+
       let data: {
         success?: boolean;
         message?: string;
@@ -71,30 +72,49 @@ export default function AdminLogin({ onLogin }: AdminLoginProps) {
         );
       }
 
+      // API login failed
       if (!response.ok || !data.success || !data.user) {
         setError(data.message || "Invalid email or password.");
         return;
       }
 
-      if (String(data.user.role ?? "").toLowerCase() !== "admin") {
-        setError("This account does not have administrator access.");
+      // Allow BOTH admin and manager
+      const userRole = String(data.user.role ?? "")
+        .trim()
+        .toLowerCase();
+
+      if (userRole !== "admin" && userRole !== "manager") {
+        setError(
+          "This account does not have administrator or manager access."
+        );
         return;
       }
 
-      if (String(data.user.status ?? "active").toLowerCase() !== "active") {
-        setError("Your administrator account is inactive.");
+      // Check account status
+      const userStatus = String(data.user.status ?? "active")
+        .trim()
+        .toLowerCase();
+
+      if (userStatus !== "active") {
+        setError("Your account is inactive. Please contact an administrator.");
         return;
       }
 
-      // Keep the authenticated admin record locally only for UI restore.
-      // The backend PHP session remains the authentication source of truth.
+      // Store authenticated user locally for UI restore
+      // Backend PHP session remains the authentication source of truth.
       localStorage.setItem("admin", JSON.stringify(data.user));
-      localStorage.setItem("admin_remember", remember ? "true" : "false");
+      localStorage.setItem(
+        "admin_remember",
+        remember ? "true" : "false"
+      );
 
       setLoading(false);
+
+      // Continue to the application
       onLogin(data.user);
     } catch (error) {
       console.error("Admin login error:", error);
+
       setError(
         error instanceof Error
           ? error.message
@@ -114,7 +134,7 @@ export default function AdminLogin({ onLogin }: AdminLoginProps) {
       <div className="relative w-full max-w-[430px]">
         {/* Login Card */}
         <div className="bg-white border border-[#E2E8F0] rounded-3xl shadow-xl shadow-slate-200/50 overflow-hidden">
-
+          
           {/* Header */}
           <div className="px-8 pt-9 pb-7 text-center">
             {/* Logo */}
@@ -133,7 +153,7 @@ export default function AdminLogin({ onLogin }: AdminLoginProps) {
             </h1>
 
             <p className="text-[13px] text-[#64748B] mt-2">
-              Sign in to your admin back office
+              Sign in to your back office
             </p>
           </div>
 
@@ -156,7 +176,12 @@ export default function AdminLogin({ onLogin }: AdminLoginProps) {
                 >
                   <circle cx="12" cy="12" r="9" />
                   <line x1="12" y1="8" x2="12" y2="12" />
-                  <line x1="12" y1="16" x2="12.01" y2="16" />
+                  <line
+                    x1="12"
+                    y1="16"
+                    x2="12.01"
+                    y2="16"
+                  />
                 </svg>
 
                 <p className="text-[12px] text-red-600 font-medium">
@@ -319,6 +344,7 @@ export default function AdminLogin({ onLogin }: AdminLoginProps) {
               ) : (
                 <>
                   Sign in
+
                   <svg
                     width="16"
                     height="16"
@@ -343,14 +369,14 @@ export default function AdminLogin({ onLogin }: AdminLoginProps) {
           {/* Footer */}
           <div className="border-t border-[#F1F5F9] px-8 py-4 text-center bg-[#FAFAFA]">
             <p className="text-[10px] text-[#94A3B8]">
-              Authorized administrators only
+              Authorized administrators and managers only
             </p>
           </div>
         </div>
 
         {/* Brand */}
         <p className="text-center text-[10px] text-[#94A3B8] mt-5">
-         R&J POS · Back Office
+          R&J POS · Back Office
         </p>
       </div>
     </div>

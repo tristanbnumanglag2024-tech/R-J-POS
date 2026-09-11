@@ -39,7 +39,7 @@ interface VariantOption {
   values: string;
 }
 
-const API_BASE = "https://sakuracareapi.site/rhea-pos-api";
+import { API_BASE } from "../config/api";
 
 const INITIAL_FORM = {
   name: "",

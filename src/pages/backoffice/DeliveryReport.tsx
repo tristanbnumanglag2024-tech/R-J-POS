@@ -37,7 +37,7 @@ type PurchaseOrderSummary = {
   items: PurchaseOrderItem[];
 };
 
-const API_BASE = "https://sakuracareapi.site/rhea-pos-api";
+import { API_BASE } from "../../config/api";
 
 const emptyForm = {
   delivery_date: new Date().toISOString().slice(0, 10),

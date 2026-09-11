@@ -10,7 +10,7 @@ import {
   Pagination,
 } from "../components/ui";
 
-const API_BASE = "https://sakuracareapi.site/rhea-pos-api";
+import { API_BASE } from "../config/api";
 const PER_PAGE = 8;
 
 type ReceiptCardProps = {

@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { API_BASE } from "../config/api";
 import {
   Card,
   Badge,
@@ -11,7 +12,7 @@ import {
   Toggle,
 } from "../components/ui";
 
-const API_BASE = "https://sakuracareapi.site/rhea-pos-api";
+
 
 type Category = {
   id: number;
@@ -54,7 +55,7 @@ function getImageUrl(image: string | null) {
     return image;
   }
 
-  return `https://sakuracareapi.site${image}`;
+  return `${API_BASE}${image}`;
 }
 
 export default function Categories() {

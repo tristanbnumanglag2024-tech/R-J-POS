@@ -1,6 +1,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { createPortal } from "react-dom";
+import { API_BASE } from "../config/api";
 import {
   Card,
   Badge,
@@ -83,7 +84,7 @@ interface Product {
   variants?: ProductVariant[];
 }
 
-const API_BASE = "https://sakuracareapi.site/rhea-pos-api";
+
 
 const PER_PAGE = 8;
 

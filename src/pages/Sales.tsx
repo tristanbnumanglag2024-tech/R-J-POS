@@ -61,7 +61,7 @@ interface SaleDetail extends Sale {
   items_detail: SaleItem[];
 }
 
-const API_BASE = "https://sakuracareapi.site/rhea-pos-api";
+import { API_BASE } from "../config/api";
 
 type SalesCardProps = {
   children: React.ReactNode;

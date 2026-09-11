@@ -84,11 +84,10 @@ type StoreOption = {
 |
 */
 
-const ROOT_API =
-  "https://sakuracareapi.site/rhea-pos-api";
+import { API_BASE } from "../config/api";
 
-const API_BASE =
-  `${ROOT_API}/inventory`;
+const ROOT_API = API_BASE;
+const INVENTORY_API = `${API_BASE}/inventory`;
 
 /*
 |--------------------------------------------------------------------------
@@ -457,7 +456,7 @@ export default function Inventory({
       inventoryRequestRef.current = controller;
 
       const response = await fetch(
-        `${API_BASE}/inventory.php${params.toString() ? `?${params.toString()}` : ""}`,
+        `${INVENTORY_API}/inventory.php${params.toString() ? `?${params.toString()}` : ""}`,
         {
           method: "GET",
           headers: {
@@ -736,7 +735,7 @@ export default function Inventory({
 
         const response =
           await fetch(
-            `${API_BASE}/adjust.php`,
+            `${INVENTORY_API}/adjust.php`,
             {
               method: "POST",
 
@@ -825,7 +824,7 @@ export default function Inventory({
 
         const response =
           await fetch(
-            `${API_BASE}/inventory-history.php?store_id=${item.store_id}&product_id=${item.product_id}`
+            `${INVENTORY_API}/inventory-history.php?store_id=${item.store_id}&product_id=${item.product_id}`
           );
 
         const data =

@@ -22,10 +22,7 @@ import {
 | API
 |--------------------------------------------------------------------------
 */
-
-const API_BASE =
-  import.meta.env.VITE_API_BASE ||
-  "https://sakuracareapi.site/rhea-pos-api";
+import { API_BASE } from "../../config/api";
 
 /*
 |--------------------------------------------------------------------------

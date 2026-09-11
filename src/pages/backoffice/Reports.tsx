@@ -15,7 +15,7 @@ import {
 } from "recharts";
 import { Card, Button } from "../../components/ui";
 
-const API_BASE = "https://sakuracareapi.site/rhea-pos-api";
+import { API_BASE } from "../../config/api";
 
 type Sale = {
   id: number;

@@ -10,7 +10,7 @@ import {
   Td,
 } from "../../components/ui";
 
-const API_BASE = "https://sakuracareapi.site/rhea-pos-api";
+import { API_BASE } from "../../config/api";
 
 type Store = {
   id: number;

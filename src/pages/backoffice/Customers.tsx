@@ -25,14 +25,16 @@ import {
 |--------------------------------------------------------------------------
 */
 
-const API_BASE =
-  "https://sakuracareapi.site/rhea-pos-api/customers";
+import { API_BASE } from "../../config/api";
+
+const CUSTOMERS_API =
+  `${API_BASE}/customers`;
 
 const LIST_API =
-  `${API_BASE}/list.php`;
+  `${CUSTOMERS_API}/list.php`;
 
 const CREATE_API =
-  `${API_BASE}/create.php`;
+  `${CUSTOMERS_API}/create.php`;
 
 /*
 |--------------------------------------------------------------------------
@@ -511,15 +513,9 @@ export default function Customers({
               },
 
               body: JSON.stringify({
-                store_id:
-                  activeStoreId,
-
                 name,
-
                 email,
-
                 phone,
-
                 city,
               }),
             }
@@ -1541,24 +1537,6 @@ export default function Customers({
               }
               placeholder="e.g. Laoag City"
             />
-
-            <div className="rounded-lg bg-[#F8FAFC] border border-[#E2E8F0] px-3 py-2">
-
-              <p className="text-[10px] text-[#94A3B8]">
-                Store
-              </p>
-
-              <p className="text-[12px] font-medium text-[#475569] mt-0.5">
-
-                Store #{activeStoreId}
-
-              </p>
-
-              <p className="text-[10px] text-[#94A3B8] mt-0.5">
-                This customer will be registered under the currently selected store.
-              </p>
-
-            </div>
 
             <div className="flex gap-3 pt-1">
 

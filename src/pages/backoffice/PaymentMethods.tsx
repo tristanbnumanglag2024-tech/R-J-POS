@@ -7,14 +7,16 @@ import { Card, Badge, Toggle } from "../../components/ui";
 |--------------------------------------------------------------------------
 */
 
-const API_BASE =
-  "https://sakuracareapi.site/rhea-pos-api/payment_methods";
+import { API_BASE } from "../../config/api";
+
+const PAYMENT_METHODS_API =
+  `${API_BASE}/payment_methods`;
 
 const LIST_API =
-  `${API_BASE}/list.php`;
+  `${PAYMENT_METHODS_API}/list.php`;
 
 const UPDATE_API =
-  `${API_BASE}/update.php`;
+  `${PAYMENT_METHODS_API}/update.php`;
 
 /*
 |--------------------------------------------------------------------------
@@ -128,7 +130,7 @@ export default function PaymentMethods({
       setStoresLoading(true);
 
       const response = await fetch(
-        "https://sakuracareapi.site/rhea-pos-api/stores/topbar.php",
+        `${API_BASE}/stores/topbar.php`,
         {
           method: "GET",
           headers: {
