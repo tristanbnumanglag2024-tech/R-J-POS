@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useState } from "react";
+import { API_BASE } from "../config/api";
 import {
   AreaChart,
   Area,
@@ -24,7 +25,7 @@ import {
   Tabs,
 } from "../components/ui";
 
-const API_BASE = "https://sakuracareapi.site/rhea-pos-api";
+
 
 type DashboardCardProps = {
   children: React.ReactNode;

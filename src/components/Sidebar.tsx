@@ -182,7 +182,7 @@ export default function Sidebar({
 
       try {
         const response = await fetch(
-          `${API_BASE}/general/get.php?user_id=${encodeURIComponent(String(userId))}`,
+          `${API_BASE}/settings/general/get.php?user_id=${encodeURIComponent(String(userId))}`,
           { credentials: "include" }
         );
 
