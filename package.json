@@ -3,12 +3,15 @@
   "private": true,
   "version": "1.0.0",
   "type": "module",
-  "scripts": {
-    "dev": "vite --host 0.0.0.0",
-    "build": "vite build",
-    "preview": "vite preview",
-    "format": "oxfmt"
-  },
+ "scripts": {
+  "dev": "vite --host 0.0.0.0",
+"dev:test": "vite --host 0.0.0.0 --mode development",
+  "build": "vite build",
+  "build:test": "vite build --mode development",
+  "build:prod": "vite build --mode production",
+  "preview": "vite preview",
+  "format": "oxfmt"
+},
   "dependencies": {
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
