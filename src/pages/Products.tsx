@@ -1780,6 +1780,8 @@ export default function Products({
     const productId = Number(editProduct.id);
     const name = editProduct.name.trim();
     const sku = editProduct.sku?.trim() || null;
+    const sellingPrice = Number(editProduct.price);
+    const costPrice = Number(editProduct.cost);
     const supplierId = editProduct.supplier_id
       ? Number(editProduct.supplier_id)
       : null;
@@ -1797,6 +1799,14 @@ export default function Products({
     }
     if (sku !== null && !/^\d{1,8}$/.test(sku)) {
       setError("SKU must contain 1 to 8 digits.");
+      return;
+    }
+    if (!Number.isFinite(sellingPrice) || sellingPrice < 0) {
+      setError("Invalid selling price.");
+      return;
+    }
+    if (!Number.isFinite(costPrice) || costPrice < 0) {
+      setError("Invalid cost price.");
       return;
     }
     if (supplierId !== null && (!Number.isInteger(supplierId) || supplierId <= 0)) {
@@ -1825,6 +1835,8 @@ export default function Products({
             product_id: productId,
             name,
             sku,
+            price: sellingPrice,
+            cost: costPrice,
             supplier_id: supplierId,
             category_id: categoryId,
           }),
@@ -3147,6 +3159,24 @@ export default function Products({
                     value={editProduct.sku || ""}
                     onChange={(value) =>
                       handleEditChange("sku", value)
+                    }
+                  />
+
+                  <EditInput
+                    label="Selling Price (₱)"
+                    value={String(editProduct.price ?? 0)}
+                    type="number"
+                    onChange={(value) =>
+                      handleEditChange("price", value === "" ? 0 : Number(value))
+                    }
+                  />
+
+                  <EditInput
+                    label="Cost Price (₱)"
+                    value={String(editProduct.cost ?? 0)}
+                    type="number"
+                    onChange={(value) =>
+                      handleEditChange("cost", value === "" ? 0 : Number(value))
                     }
                   />
 
