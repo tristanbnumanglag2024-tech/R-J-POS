@@ -723,14 +723,10 @@ case "add-product":
   currentPage={boPage}
   onNavigate={navigateBO}
   onLogout={async () => {
-  const confirmed = window.confirm(
-    "Are you sure you want to logout?"
-  );
-
-  if (!confirmed) return;
-
+  // Sidebar handles the confirmation dialog. Keep this handler focused
+  // on ending the session and returning to the login screen.
   try {
-    await fetch(`${API_BASE}/logout.php`, {
+    await fetch(`${API_BASE}/admin/logout.php`, {
       method: "POST",
       credentials: "include",
       headers: {
@@ -738,11 +734,13 @@ case "add-product":
       },
     });
   } catch (error) {
-    console.error("Logout error:", error);
+    console.error("Logout request failed:", error);
+  } finally {
+    // Remove only the admin identity used by this App's session check.
+    localStorage.removeItem("admin");
+    setMode("admin-login");
+    setBOPage("dashboard");
   }
-
-  localStorage.removeItem("admin");
-  setMode("admin-login");
 }}
 />
 
